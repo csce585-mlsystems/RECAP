@@ -1,0 +1,36 @@
+# Core ML
+torch>=2.0
+torchvision>=0.15
+torchaudio
+
+# Data handling
+numpy
+pandas
+scikit-learn
+tqdm
+
+# Visualization
+matplotlib
+seaborn
+
+# Image augmentation
+albumentations
+
+# Explainability
+torchcam
+captum
+
+# Geospatial
+geopandas
+shapely
+fiona
+rasterio
+
+# App & mapping
+streamlit
+folium
+leafmap
+
+# Experiment logging
+tensorboard
+wandb
