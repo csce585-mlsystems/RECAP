@@ -58,7 +58,7 @@ def parse_labels(images_dir, labels_dir, split_name):
     return pd.DataFrame(rows)
 
 
-def build_train_index(root_dir, out_file="outputs/index.csv"):
+def build_train_index(root_dir, out_file="info/index.csv"):
     images_dir = os.path.join(root_dir, "train", "images")
     labels_dir = os.path.join(root_dir, "train", "labels")
 
@@ -69,7 +69,7 @@ def build_train_index(root_dir, out_file="outputs/index.csv"):
     print(f"✅ Training index saved to {out_file} with {len(df)} rows.")
 
 
-def build_test_index(root_dir, out_file="outputs/test_index.csv"):
+def build_test_index(root_dir, out_file="info/test_index.csv"):
     images_dir = os.path.join(root_dir, "test", "images")
 
     rows = []
@@ -103,5 +103,5 @@ def build_test_index(root_dir, out_file="outputs/test_index.csv"):
 
 if __name__ == "__main__":
     ROOT_DIR = r"C:\Users\yatin\Desktop\Data"
-    build_train_index(ROOT_DIR, out_file="outputs/index.csv")
-    build_test_index(ROOT_DIR, out_file="outputs/test_index.csv")
+    build_train_index(ROOT_DIR, out_file="info/index.csv")
+    build_test_index(ROOT_DIR, out_file="info/test_index.csv")
