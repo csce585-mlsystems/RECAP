@@ -62,7 +62,6 @@ def parse_labels(images_dir, labels_dir, split_name):
             pre_path = os.path.join(images_dir, pre_file)
             post_path = os.path.join(images_dir, post_file)
 
-            # Only add if files exist
             if os.path.exists(pre_path) and os.path.exists(post_path):
                 rows.append({
                     "split": split_name,
