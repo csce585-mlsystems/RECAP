@@ -1,0 +1,3 @@
+# --- DATA: keep structure, ignore contents ---
+/data/
+!/data/.gitkeep
