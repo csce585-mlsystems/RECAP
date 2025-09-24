@@ -1,7 +1,6 @@
 # from huggingface_hub import HfApi
 # import os
 
-# api = HfApi(token=os.getenv("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"))
 # api.upload_folder(
 #     folder_path="/Users/aryananand/Documents/RECAP/data/xBD Dataset",
 #     repo_id="aryananand/xBD",
