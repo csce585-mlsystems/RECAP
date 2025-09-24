@@ -122,7 +122,7 @@ def build_test_index(root_dir, out_file="info/test_index.csv"):
 
 
 if __name__ == "__main__":
-    ROOT_DIR = r"C:\Users\yatin\Desktop\Data"
+    ROOT_DIR = r"data\xBD Dataset"
 
     build_train_index(ROOT_DIR, out_file="info/index.csv")
     build_test_index(ROOT_DIR, out_file="info/test_index.csv")
