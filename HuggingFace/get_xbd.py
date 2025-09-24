@@ -1,18 +1,22 @@
+#!/usr/bin/env python3
+"""
+Download the PUBLIC dataset aryananand/xBD@v1 into ./data/xBD (same path on macOS/Linux/Windows).
+- Auto-installs huggingface_hub if missing
+- No token required (public repo)
+- Idempotent: re-running resumes / skips already-downloaded files
+"""
 
-import os
 import sys
 from pathlib import Path
 
-# ==== EDIT ONLY IF YOU CHANGE REPO/TAG ====
-HF_REPO_ID = "aryananand/xBD"
-REVISION   = "v1"
-# ==========================================
+HF_REPO_ID = "aryananand/xBD"   # <-- public dataset repo
+REVISION   = "v1"               # <-- change to v2 later if you publish a new tag
 
 MIN_PY = (3, 8)
 if sys.version_info < MIN_PY:
-    sys.exit(f"Please run with Python {MIN_PY[0]}.{MIN_PY[1]} or newer.")
+    sys.exit(f"Please run with Python {MIN_PY[0]}.{MIN_PY[1]}+")
 
-# Ensure dependency is present (auto-install if missing)
+# Ensure dependency (auto-install if missing)
 try:
     from huggingface_hub import snapshot_download
 except ModuleNotFoundError:
@@ -21,17 +25,6 @@ except ModuleNotFoundError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "huggingface_hub>=0.25.0"])
     from huggingface_hub import snapshot_download
 
-# Require token for PRIVATE datasets
-TOKEN = os.getenv("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") or os.getenv("HF_TOKEN")
-if not TOKEN:
-    sys.exit(
-        "No token found.\n"
-        "Set HUGGINGFACE_HUB_TOKEN to your Hugging Face Read token (starts with hf_).\n"
-        "macOS/Linux: export HUGGINGFACE_HUB_TOKEN=hf_XXXX\n"
-        "Windows PS : $env:HUGGINGFACE_HUB_TOKEN=\"hf_XXXX\""
-    )
-
-# Destination folder: ./data/xBD (same on every OS)
 DEST = Path(__file__).resolve().parents[1] / "data" / "xBD"
 DEST.mkdir(parents=True, exist_ok=True)
 
@@ -41,13 +34,23 @@ try:
         repo_id=HF_REPO_ID,
         repo_type="dataset",
         revision=REVISION,
-        local_dir=str(DEST),
-        local_dir_use_symlinks=False,  # write real files (Windows-friendly)
-        token=TOKEN,
-        # You can optionally set cache_dir=... if you want to move the HF cache
+        local_dir=str(DEST),           # materialize files under ./data/xBD
+        local_dir_use_symlinks=False,  # real files (Windows-friendly)
+        # token=None  # public: no token
     )
 except Exception as e:
-    # A friendly, single-line error that’s easy to report
     sys.exit(f"[error] Download failed: {e}")
+
+# Optional: light structure sanity check (won't fail download)
+expected = [
+    "train/images", "train/labels", "train/target",
+    "test/images",  "test/labels",  "test/target",
+]
+missing = [p for p in expected if not (DEST / p).exists()]
+if missing:
+    # Create empty dirs so downstream code never breaks if a split is absent
+    for p in missing:
+        (DEST / p).mkdir(parents=True, exist_ok=True)
+    print(f"[warn] Created missing empty dirs: {', '.join(missing)}")
 
 print(f"[ok] xBD is ready at: {DEST}")
