@@ -34,3 +34,11 @@ leafmap
 # Experiment logging
 tensorboard
 wandb
+
+torch
+torchvision
+torchgeo
+numpy
+pillow
+tqdm
+scipy

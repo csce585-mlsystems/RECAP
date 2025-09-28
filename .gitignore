@@ -1,3 +1,5 @@
 # --- DATA: keep structure, ignore contents ---
 /data/
 !/data/.gitkeep
+
+/weights/deeplabv3_resnet50_coco-cd0a2569.pth
