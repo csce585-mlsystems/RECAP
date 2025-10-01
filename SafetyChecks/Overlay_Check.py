@@ -3,7 +3,7 @@ import numpy as np
 
 p = "/Users/aryananand/Downloads/train 2/targets/hurricane-harvey_00000070_post_disaster_target.png"
 m = np.array(Image.open(p))
-print("Unique values:", np.unique(m))  # expect a subset of [0,1,2,3,4]
+print("Unique values:", np.unique(m))  
 
 PALETTE = {
     0: (0, 0, 0),        # background
