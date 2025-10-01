@@ -62,9 +62,14 @@ def parse_labels(images_dir, labels_dir, split_name):
             pre_path = os.path.join(images_dir, pre_file)
             post_path = os.path.join(images_dir, post_file)
 
+            # Extract event name (prefix before first underscore)
+            event_name = os.path.basename(pre_file).split("_")[0]
+
+            # Only add if files exist
             if os.path.exists(pre_path) and os.path.exists(post_path):
                 rows.append({
                     "split": split_name,
+                    "event": event_name,                 # NEW COLUMN
                     "building_id": building_id,
                     "label_id": DAMAGE_MAP[damage],
                     "label_name": damage,
@@ -107,9 +112,12 @@ def build_test_index(root_dir, out_file="info/test_index.csv"):
         post_file = f"{prefix}_post_disaster.png"
         post_path = os.path.join(images_dir, post_file)
 
+        event_name = os.path.basename(f).split("_")[0]
+
         if os.path.exists(post_path):
             rows.append({
                 "split": "test",
+                "event": event_name,                   # NEW COLUMN
                 "building_id": prefix,
                 "pre_path": pre_path,
                 "post_path": post_path

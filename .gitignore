@@ -1,0 +1,48 @@
+# --- Python cache ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pkl
+*.tmp
+*.log
+
+# --- Virtual environment ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+*.ipynb~ 
+
+# --- OS / IDE junk ---
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# --- Ignore all CSVs except training log ---
+*.csv
+!info/training_log.csv
+
+# --- Data ---
+data/                 # raw dataset + chips (huge, keep out of git)
+
+# --- Info outputs ---
+info/predictions_by_epoch/   # per-epoch predictions
+!info/README.md              # keep placeholder if needed
+
+# --- Models ---
+recap/models/*.pth           # ignore all checkpoints
+!recap/models/baseline_resnet_final.pth   # keep final model
+
+# --- Archives & arrays ---
+*.tar
+*.zip
+*.gz
+*.npz
+*.npy
