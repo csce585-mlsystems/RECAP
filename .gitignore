@@ -30,7 +30,10 @@ Thumbs.db
 !info/training_log.csv
 
 # --- Data ---
-data/                 # raw dataset + chips (huge, keep out of git)
+data/
+*.png
+*.jpg
+*.jpeg
 
 # --- Info outputs ---
 info/predictions_by_epoch/   # per-epoch predictions
