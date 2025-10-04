@@ -52,18 +52,26 @@ def sanitize_for_display(df, max_rows=None, drop_geometry=True):
 # --------------------------
 @st.cache_data
 def load_predictions(path):
-    df = pd.read_csv(path)
+    # try parquet first (faster), else csv
+    if os.path.exists(path.replace(".csv", ".parquet")):
+        try:
+            df = pd.read_parquet(path.replace(".csv", ".parquet"))
+        except Exception:
+            df = pd.read_csv(path)
+    else:
+        df = pd.read_csv(path)
     # Ensure polygon geometry column exists (may be string)
     if "polygon_wkt" in df.columns:
-        try:
-            df["geometry"] = df["polygon_wkt"].apply(lambda x: wkt.loads(x) if pd.notna(x) else None)
-        except Exception:
-            # fallback: keep geometry None if parsing fails
-            df["geometry"] = None
+        def try_parse(w):
+            try:
+                return wkt.loads(w) if pd.notna(w) else None
+            except Exception:
+                return None
+        df["geometry"] = df["polygon_wkt"].apply(try_parse)
     else:
         df["geometry"] = None
 
-    # return GeoDataFrame for map computations
+    # return GeoDataFrame for map computations (safe)
     try:
         gdf = gpd.GeoDataFrame(df, geometry="geometry")
     except Exception:
@@ -91,6 +99,11 @@ st.markdown("Prototype app: building-level damage predictions — Week 8 polish 
 
 st.sidebar.header("App Sections")
 section = st.sidebar.radio("Go to", ["Map", "Inspection Queue", "Inspector", "Metrics"])
+
+# Sidebar controls
+st.sidebar.markdown("### Map options")
+FORCE_PIXEL_CHECKBOX = st.sidebar.checkbox("Force pixel plotting (treat coords as image pixels)", value=True)
+st.sidebar.markdown("---")
 
 # Event selector in sidebar
 if "event" in gdf.columns:
@@ -156,10 +169,10 @@ legend_html = """
 """
 
 # --------------------------
-# MAP Section (auto-detect pixel vs lat/lon)
+# MAP Section (auto-detect pixel vs lat/lon but allow force)
 # --------------------------
 if section == "Map":
-    st.header("Map view / Pixel-space scatter (auto-detect coordinates)")
+    st.header("Map view / Pixel-space scatter (toggle in sidebar)")
     if working.empty:
         st.warning("⚠️ No buildings match the current filter (try lowering confidence).")
     else:
@@ -187,7 +200,11 @@ if section == "Map":
             var_ok = (np.std(xsf[:min(len(xsf),200)]) > 1e-6) and (np.std(ysf[:min(len(ysf),200)]) > 1e-6)
             return lon_ok and lat_ok and var_ok
 
-        is_geo = looks_like_latlon(xs, ys)
+        # Respect user toggle: if forced, treat as pixel-space
+        if FORCE_PIXEL_CHECKBOX:
+            is_geo = False
+        else:
+            is_geo = looks_like_latlon(xs, ys)
 
         if is_geo:
             try:
@@ -216,10 +233,25 @@ if section == "Map":
             except Exception as e:
                 st.error(f"Failed to render folium map: {e}")
         else:
-            st.info("Detected pixel/image coordinates — plotting in pixel space. Switches to world map when lat/lon are available.")
+            st.info("Displaying pixel-space scatter (use the sidebar toggle to show world map if you have lat/lon).")
             df_plot = working.copy()
-            df_plot["centroid_x"] = df_plot["geometry"].apply(lambda g: float(g.centroid.x) if g is not None else np.nan)
-            df_plot["centroid_y"] = df_plot["geometry"].apply(lambda g: float(g.centroid.y) if g is not None else np.nan)
+
+            # Ensure centroid_x/centroid_y exist — compute from polygon_wkt if needed
+            if "centroid_x" not in df_plot.columns or "centroid_y" not in df_plot.columns:
+                try:
+                    df_plot["centroid_x"] = df_plot.apply(
+                        lambda r: float(r["geometry"].centroid.x) if r.get("geometry") is not None else (float(wkt.loads(r["polygon_wkt"]).centroid.x) if pd.notna(r.get("polygon_wkt")) else np.nan),
+                        axis=1
+                    )
+                    df_plot["centroid_y"] = df_plot.apply(
+                        lambda r: float(r["geometry"].centroid.y) if r.get("geometry") is not None else (float(wkt.loads(r["polygon_wkt"]).centroid.y) if pd.notna(r.get("polygon_wkt")) else np.nan),
+                        axis=1
+                    )
+                except Exception:
+                    # fallback simpler extraction
+                    df_plot["centroid_x"] = df_plot["geometry"].apply(lambda g: float(g.centroid.x) if g is not None else np.nan)
+                    df_plot["centroid_y"] = df_plot["geometry"].apply(lambda g: float(g.centroid.y) if g is not None else np.nan)
+
             df_plot = df_plot.dropna(subset=["centroid_x","centroid_y"])
             if df_plot.shape[0] == 0:
                 st.warning("No valid centroid coordinates to plot.")
@@ -236,8 +268,7 @@ if section == "Map":
                     x=alt.X("centroid_x:Q", title="pixel x"),
                     y=alt.Y("centroid_y:Q", title="pixel y", scale=alt.Scale(reverse=True)),
                     color=alt.Color("label_name:N", scale=alt.Scale(domain=list(LABEL_COLORS.keys()),
-                                                                    range=list(LABEL_COLORS.values())),
-                                    legend=alt.Legend(title="Label")),
+                                                                    range=list(LABEL_COLORS.values()))),
                     size=alt.Size("size:Q", legend=None),
                     tooltip=["building_id", "event", "label_name", alt.Tooltip("label_conf:Q", format=".3f")]
                 ).interactive()

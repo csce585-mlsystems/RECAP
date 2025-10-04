@@ -40,8 +40,17 @@ info/predictions_by_epoch/   # per-epoch predictions
 !info/README.md              # keep placeholder if needed
 
 # --- Models ---
-recap/models/*.pth           # ignore all checkpoints
-!recap/models/baseline_resnet_final.pth   # keep final model
+# Ignore all training checkpoints
+recap/models/checkpoint_*.pth
+recap/models/*.pt
+recap/models/*.ckpt
+
+# Ignore all generic .pth files in models
+recap/models/*.pth
+
+# Keep the final model only
+!recap/models/baseline_resnet_final.pth
+
 
 # --- Archives & arrays ---
 *.tar

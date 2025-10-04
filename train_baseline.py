@@ -18,21 +18,21 @@ from recap.datasets.xview2_dataset import XView2Dataset
 # --------------------------
 # Config - tweak these
 # --------------------------
-INDEX_FILE = "info/index.csv"
+INDEX_FILE = "info/index_with_chips.csv"
 CHIP_SIZE = 224
 
-BATCH_SIZE = 32
-NUM_WORKERS = 4
+BATCH_SIZE = 48
+NUM_WORKERS = 8
 PERSISTENT_WORKERS = True
-PREFETCH_FACTOR = 2
+PREFETCH_FACTOR = 4
 
-EPOCHS = 30
+EPOCHS = 25
 LR = 1e-4
 VAL_SPLIT = 0.2
 NUM_CLASSES = 4
 
 USE_SAMPLER = True     # set True to enable WeightedRandomSampler (oversample minorities)
-USE_FOCAL = False      # set True to use FocalLoss instead of CrossEntropy
+USE_FOCAL = True      # set True to use FocalLoss instead of CrossEntropy
 BACKBONE = "resnet18"  # "resnet18" or "resnet34"
 
 CHECKPOINT_DIR = "recap/models"
@@ -90,11 +90,13 @@ def main():
 
     # transforms (tensor-friendly). You can expand if needed.
     train_transform = transforms.Compose([
-        transforms.RandomHorizontalFlip(p=0.5),
-        transforms.RandomVerticalFlip(p=0.5),
-        transforms.RandomRotation(15),
-        transforms.RandomErasing(p=0.25, scale=(0.02,0.2)),
-    ])
+    transforms.RandomHorizontalFlip(p=0.5),
+    transforms.RandomVerticalFlip(p=0.5),
+    transforms.RandomRotation(15),
+    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.15),
+    transforms.RandomErasing(p=0.3, scale=(0.02,0.2)),
+])
+
     val_transform = transforms.Compose([])
 
     print("Loading dataset index:", INDEX_FILE)
@@ -135,7 +137,7 @@ def main():
         # compute class weights over full df (simple inverse frequency)
         label_counts = Counter(df["label_id"].values)
         total = sum(label_counts.values())
-        class_weights = {cls: total/count for cls, count in label_counts.items()}
+        class_weights = {cls: total/count**0.5 for cls, count in label_counts.items()}
 
         # build sample_weights aligned with train_indices order
         sample_weights_train = []

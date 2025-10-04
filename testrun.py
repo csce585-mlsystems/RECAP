@@ -1,34 +1,26 @@
-# test_dml.py
-import torch
-try:
-    import torch_directml
-    dml = torch_directml.device()
-    device = torch.device(dml)
-    print("Using DirectML device:", dml)
-except Exception as e:
-    print("DirectML import failed:", e)
-    device = torch.device("cpu")
+import pandas as pd
+df = pd.read_csv("info/predictions.csv")   # or predictions_with_confidence.parquet
+print("TOTAL rows:", len(df))
+print("Columns:", df.columns.tolist())
 
-# quick test: small model forward/backward
-from torchvision import models
-import time
+# label_conf diagnostics
+if "label_conf" in df.columns:
+    print("label_conf dtype:", df["label_conf"].dtype)
+    print("label_conf min/max (raw):", df["label_conf"].min(), df["label_conf"].max())
+    # show a few unique sample values
+    print("sample values:", df["label_conf"].dropna().unique()[:10])
+else:
+    print("No label_conf column found")
 
-model = models.resnet18(weights=None)
-model.conv1 = torch.nn.Conv2d(6, 64, kernel_size=7, stride=2, padding=3, bias=False)
-model.fc = torch.nn.Linear(model.fc.in_features, 4)
-model.to(device)
+# event & per-event counts
+if "event" in df.columns:
+    print(df["event"].value_counts().head(10))
 
-# dummy batch: batch=8, 6 channels, 224x224
-x = torch.randn(8, 6, 224, 224, device=device)
-y = torch.randint(0, 4, (8,), device=device)
-criterion = torch.nn.CrossEntropyLoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+# check NaNs and strings
+print("label_conf nulls:", df["label_conf"].isna().sum() if "label_conf" in df.columns else "NA")
+print("Any non-numeric label_conf?", pd.to_numeric(df["label_conf"], errors="coerce").isna().sum() if "label_conf" in df.columns else "NA")
 
-t0 = time.time()
-out = model(x)
-loss = criterion(out, y)
-loss.backward()
-optimizer.step()
-torch.cuda = None  # no-op but ensures code won't rely on CUDA APIs
-t1 = time.time()
-print("One forward+backward on device took {:.3f}s".format(t1 - t0))
+# If polygon_wkt exists: check parsing readiness (quick)
+if "polygon_wkt" in df.columns:
+    sample = df["polygon_wkt"].dropna().iloc[:3].tolist()
+    print("polygon_wkt samples:", sample)
