@@ -2,4 +2,5 @@
 /data/
 !/data/.gitkeep
 
-/weights/deeplabv3_resnet50_coco-cd0a2569.pth
+/weights/resnet18-f37072fd.pth
+/models/stage1_deeplabv3_resnet50_best.pt

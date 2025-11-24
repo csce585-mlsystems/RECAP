@@ -1,81 +1,83 @@
 """
 common.py
 Purpose:
-  Shared helpers & constants. All paths resolve from the project root, so you can
-  move scripts inside `src/` (or elsewhere) without breaking anything.
+  Shared helpers: project root detection, device selection, seeding,
+  color mapping, simple overlay utilities, and a small logger.
 """
 
-import os, random, json, platform
-from datetime import datetime
 from pathlib import Path
-from typing import Dict, Tuple
+import random
 import numpy as np
+from PIL import Image
+
 import torch
 
-# ----- project root ----- #
-# project root = parent of this file's parent (i.e., repo/)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-# ----- label palette ----- #
-PALETTE = {
-    0: (0, 0, 0),        # background
-    1: (0, 200, 0),      # no damage
-    2: (255, 215, 0),    # minor
-    3: (255, 140, 0),    # major
-    4: (220, 20, 60),    # destroyed
+
+def get_device(prefer_gpu: bool = True) -> torch.device:
+    if prefer_gpu and torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
+
+
+def set_seed(seed: int = 42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+# Map damage class index -> text + color
+IDX2LABEL = {
+    0: "no-damage",
+    1: "minor-damage",
+    2: "major-damage",
+    3: "destroyed",
 }
-CLASS_NAMES = {0: "bg", 1: "no", 2: "minor", 3: "major", 4: "destroyed"}
-N_CLASSES = 5
 
-# ----- utils ----- #
-def ensure_dirs(*paths):
-    for p in paths:
-        Path(p).mkdir(parents=True, exist_ok=True)
+LABEL2IDX = {v: k for k, v in IDX2LABEL.items()}
 
-def set_seed(s=123):
-    random.seed(s); np.random.seed(s)
-    torch.manual_seed(s); torch.cuda.manual_seed_all(s)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+# Simple RGBA colors for overlays (r,g,b,a)
+LABEL2COLOR = {
+    "no-damage":     (128, 128, 128, 90),
+    "minor-damage":  (255, 255, 0,   90),
+    "major-damage":  (255, 140, 0,   90),
+    "destroyed":     (255, 0,   0,   90),
+}
 
-def ts_filename() -> str:
-    return datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-def ts_human() -> str:
-    return datetime.now().strftime("%m/%d/%Y %H:%M")
+def to_numpy_image(t: torch.Tensor) -> np.ndarray:
+    """
+    t: (3,H,W) in [0,1]
+    -> uint8 (H,W,3)
+    """
+    arr = (t.detach().cpu().numpy().transpose(1, 2, 0) * 255.0).clip(0, 255).astype(np.uint8)
+    return arr
 
-def save_metrics(dict_obj: Dict, out_root: str, run_name: str) -> Tuple[str, str]:
-    ensure_dirs(out_root)
-    j = Path(out_root) / f"{run_name}.json"
-    t = Path(out_root) / f"{run_name}.txt"
-    with open(j, "w") as f: json.dump(dict_obj, f, indent=2)
-    with open(t, "w") as f:
-        for k, v in dict_obj.items():
-            if isinstance(v, (dict, list)): continue
-            f.write(f"{k}: {v}\n")
-    return str(j), str(t)
 
-def append_run_csv(csv_path: str, row: Dict):
-    p = Path(csv_path); p.parent.mkdir(parents=True, exist_ok=True)
-    write_header = not p.exists()
-    import csv as _csv
-    with open(p, "a", newline="") as f:
-        w = _csv.DictWriter(f, fieldnames=list(row.keys()))
-        if write_header: w.writeheader()
-        w.writerow(row)
+def save_overlay_polygon(
+    base_rgb: np.ndarray,
+    polygons_xy,
+    labels,
+    save_path: Path,
+):
+    """
+    Draw semi-transparent colored polygons on top of the RGB base image.
+    polygons_xy: list of np.ndarray of shape (N_i,2) in pixel coords (x,y)
+    labels: list of str damage label ("no-damage", etc.)
+    """
+    H, W, _ = base_rgb.shape
+    base_img = Image.fromarray(base_rgb)
+    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    draw = Image.core.draw(overlay.im)  # faster than ImageDraw.Draw for many polys
 
-def colorize_mask(mask_np: np.ndarray) -> np.ndarray:
-    h, w = mask_np.shape
-    out = np.zeros((h, w, 3), dtype=np.uint8)
-    for k, rgb in PALETTE.items():
-        out[mask_np == k] = rgb
-    return out
+    for poly, lab in zip(polygons_xy, labels):
+        color = LABEL2COLOR.get(lab, (0, 255, 255, 90))
+        # PIL draw expects a flat list of coordinates: [x0,y0,x1,y1,...]
+        coords = [float(x) for xy in poly for x in xy]
+        draw.polygon(coords, fill=color)
 
-def blend_rgba(img_rgb: np.ndarray, mask_rgb: np.ndarray, alpha: float = 0.45) -> np.ndarray:
-    return (alpha * mask_rgb + (1 - alpha) * img_rgb).astype(np.uint8)
-
-def default_num_workers() -> int:
-    # Windows is safer with 0; elsewhere use ~half the cores
-    if platform.system().lower().startswith("win"):
-        return 0
-    return max(2, (os.cpu_count() or 4) // 2)
+    blended = Image.alpha_composite(base_img.convert("RGBA"), overlay)
+    blended.convert("RGB").save(save_path)
