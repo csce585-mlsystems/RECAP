@@ -172,6 +172,8 @@ def train_one_epoch(
 
         B = pre_batch.shape[0]
         optimizer.zero_grad()
+        
+        print("pre_batch shape:", pre_batch.shape, "device:", pre_batch.device)
 
         # Encode tiles once per batch
         F_pre_batch = backbone(pre_batch)   # (B,C,Hf,Wf)
