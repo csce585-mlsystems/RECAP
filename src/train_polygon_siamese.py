@@ -46,10 +46,13 @@ CONFIG: Dict = {
     "WEIGHT_DECAY": 1e-4,
 
     # CPU vs GPU specific settings
-    # (we pick at runtime based on device.type)
+    # We detect at runtime based on device.type.
+    # These are chosen to be safe for:
+    #   - CPU / Mac: small batch
+    #   - DirectML GPU (RX 7800 XT): moderate batch that avoids OOM.
     "SAMPLES_PER_EPOCH_GPU": 80_000,   # number of buildings per epoch on GPU
     "SAMPLES_PER_EPOCH_CPU": 30_000,   # fewer for CPU so it finishes
-    "BATCH_BUILDINGS_GPU": 64,         # per-building batch size on GPU
+    "BATCH_BUILDINGS_GPU": 16,         # ***REDUCED from 64 -> 16 to avoid OOM***
     "BATCH_BUILDINGS_CPU": 8,          # per-building batch size on CPU
     "NUM_WORKERS_GPU": 4,
     "NUM_WORKERS_CPU": 0,              # safer on Mac / CPU
