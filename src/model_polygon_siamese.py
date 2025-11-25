@@ -1,111 +1,195 @@
+"""
+model_polygon_siamese.py
+
+Purpose:
+  - Define the siamese tile backbone (ResNet-34) and the per-building damage head.
+  - Provide utilities for rasterizing polygon masks and pooling features.
+"""
+
+from pathlib import Path
 from typing import Tuple
+
+import numpy as np
+from PIL import Image, ImageDraw
 
 import torch
 from torch import nn
 import torch.nn.functional as F
 from torchvision import models
-from pathlib import Path
 
 
 class SiameseTileBackbone(nn.Module):
     """
     Shared ResNet-34 encoder used for both pre- and post-disaster tiles.
 
-    Accepts:
-      x: (3,H,W) or (B,3,H,W) or (B,1,3,H,W) or (1,1,3,H,W)
-    Returns:
-      feat: (B, C, H', W')
+    Inputs we support:
+      - (3, H, W)
+      - (B, 3, H, W)
+      - (1, 1, 3, H, W) or (B, 1, 3, H, W) from weird collate cases
+
+    Output:
+      - feature map: (B, C, H', W') where C = self.out_channels (512)
     """
 
     def __init__(
         self,
         imagenet_weights: bool = True,
+        weight_path: str | None = None,
         local_weight_path: str | None = None,
-    ):
+    ) -> None:
         super().__init__()
 
+        # unify the two possible arg names
+        if local_weight_path is None and weight_path is not None:
+            local_weight_path = weight_path
+
         if imagenet_weights:
+            # Try local .pth first (for offline use), fall back to torchvision weights.
             if local_weight_path is not None and Path(local_weight_path).exists():
-                # load ResNet-34 weights from local .pth
                 base = models.resnet34(weights=None)
-                print(
-                    f"[PolygonSiamese] Loaded local ResNet-34 weights from: {local_weight_path}"
-                )
                 state = torch.load(local_weight_path, map_location="cpu")
                 base.load_state_dict(state)
-            else:
-                # fallback: torchvision IMAGENET1K_V1 (will try to download)
                 print(
-                    "[PolygonSiamese] Using ResNet-34 with ImageNet pretrained weights (torchvision)."
+                    f"[PolygonSiamese] Loaded local ResNet-34 weights from: "
+                    f"{local_weight_path}"
                 )
+            else:
+                # Will try to download if not cached
                 base = models.resnet34(weights=models.ResNet34_Weights.IMAGENET1K_V1)
+                print(
+                    "[PolygonSiamese] Using ResNet-34 with ImageNet pretrained "
+                    "weights (torchvision)."
+                )
         else:
-            print("[PolygonSiamese] Using ResNet-34 with random init.")
             base = models.resnet34(weights=None)
+            print(
+                "[PolygonSiamese] Using ResNet-34 with random init "
+                "(no pretrained weights)."
+            )
 
-        # Keep stem + conv layers up to layer4 (drop avgpool, fc)
-        self.conv1 = base.conv1
-        self.bn1 = base.bn1
-        self.relu = base.relu
-        self.maxpool = base.maxpool
-        self.layer1 = base.layer1
-        self.layer2 = base.layer2
-        self.layer3 = base.layer3
-        self.layer4 = base.layer4
+        # Drop avgpool + fc, keep conv -> layer4
+        self.encoder = nn.Sequential(*list(base.children())[:-2])
+        self.out_channels = 512
 
-        self.out_channels = 512  # ResNet-34 final feature dim
-
+    # ---------- shape normalizer so conv1 never explodes ----------
     def _normalize_shape(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Make sure x is (B,3,H,W) float32.
+        Make sure x ends up as (B, 3, H, W).
 
-        Handles common bugs:
-          - (3,H,W)  → add batch dim
-          - (1,3,H,W) or (B,1,3,H,W) → squeeze the extra 1
-          - (1,1,3,H,W) → squeeze both singleton dims
+        Handles:
+          - (3, H, W)          -> (1, 3, H, W)
+          - (1, 3, H, W)       -> (1, 3, H, W)
+          - (B, 3, H, W)       -> (B, 3, H, W)
+          - (1, 1, 3, H, W)    -> (1, 3, H, W)
+          - (B, 1, 3, H, W)    -> (B, 3, H, W)
         """
-        # If 5D, squeeze a singleton dimension
         if x.dim() == 5:
-            # typical from DataLoader over (1,3,H,W): (B,1,3,H,W)
-            if x.size(1) == 1 and x.size(2) == 3:
-                x = x.squeeze(1)  # (B,3,H,W)
-            # sometimes (1,1,3,H,W)
-            elif x.size(0) == 1 and x.size(1) == 1 and x.size(2) == 3:
-                x = x.squeeze(0).squeeze(0)  # (3,H,W)
+            # assume (B, 1, 3, H, W) or (1, 1, 3, H, W)
+            if x.size(1) == 1:
+                # drop that dummy middle dim
+                x = x.squeeze(1)  # (B, 3, H, W)
             else:
-                # last-resort: flatten to (B',3,H,W)
-                B = x.size(0) * x.size(1)
-                x = x.view(B, 3, x.size(-2), x.size(-1))
+                # odd case, fallback to drop first dim
+                x = x.squeeze(0)
 
-        # If single image (3,H,W), add batch dim
         if x.dim() == 3:
+            # (3, H, W) -> (1, 3, H, W)
             x = x.unsqueeze(0)
 
-        # Final sanity check
-        assert x.dim() == 4, f"Expected 4D tensor (B,3,H,W), got shape {x.shape}"
-        if x.size(1) != 3:
-            raise ValueError(f"Expected 3 channels, got {x.size(1)} in shape {x.shape}")
-
-        if x.dtype != torch.float32:
-            x = x.float()
-
+        # now we expect (B, 3, H, W)
         return x
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: (B,3,H,W) or similar
-        returns: (B,512,H',W')
-        """
         x = self._normalize_shape(x)
+        return self.encoder(x)  # (B, 512, H', W')
 
-        x = self.conv1(x)     # (B,64,H/2,W/2)
-        x = self.bn1(x)
-        x = self.relu(x)
-        x = self.maxpool(x)   # (B,64,H/4,W/4)
 
-        x = self.layer1(x)    # (B,64, ...)
-        x = self.layer2(x)    # (B,128, ...)
-        x = self.layer3(x)    # (B,256, ...)
-        x = self.layer4(x)    # (B,512, ...)
+class DamageHead(nn.Module):
+    """
+    Deeper MLP that maps per-building feature vectors to 4 damage classes.
 
-        return x  # (B,512,H',W')
+    This is backward compatible with the training script calling:
+        head = DamageHead(in_dim=backbone.out_channels, n_classes=4)
+
+    but internally we use a small 3-layer MLP with dropout.
+    """
+
+    def __init__(
+        self,
+        in_dim: int,
+        n_classes: int = 4,
+        hidden_dim: int = 256,
+        dropout: float = 0.3,
+    ) -> None:
+        super().__init__()
+
+        # 3-layer MLP: in_dim -> hidden -> hidden -> n_classes
+        self.mlp = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, n_classes),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (#buildings, in_dim)
+        return self.mlp(x)
+
+
+def rasterize_polygon_mask(
+    poly_xy: np.ndarray,
+    Hf: int,
+    Wf: int,
+    orig_w: int,
+    orig_h: int,
+    device: torch.device,
+) -> torch.Tensor:
+    """
+    Convert a polygon (in original image pixel coords) into a binary mask at
+    feature-map resolution.
+
+    poly_xy : (N, 2) array in original coords (x, y)
+    Returns:
+      mask: (Hf, Wf) float tensor in {0,1}
+    """
+    if poly_xy.size == 0:
+        return torch.zeros((Hf, Wf), dtype=torch.float32, device=device)
+
+    poly = poly_xy.astype(float)
+
+    # scale from original size -> feature map size
+    scale_x = Wf / float(orig_w)
+    scale_y = Hf / float(orig_h)
+    poly_scaled = np.stack(
+        [poly[:, 0] * scale_x, poly[:, 1] * scale_y],
+        axis=1,
+    )
+
+    # Draw into a PIL image
+    mask_img = Image.new("L", (Wf, Hf), 0)
+    draw = ImageDraw.Draw(mask_img)
+    draw.polygon(list(map(tuple, poly_scaled)), outline=1, fill=1)
+    mask_np = np.array(mask_img, dtype="float32")
+
+    mask = torch.from_numpy(mask_np).to(device)  # (Hf, Wf)
+    return mask
+
+
+def mask_pool_features(
+    feat_map: torch.Tensor,  # (C, Hf, Wf)
+    mask: torch.Tensor,      # (Hf, Wf)
+) -> torch.Tensor:
+    """
+    Average-pool features inside a binary mask.
+
+    Returns:
+      v: (C,) pooled feature vector.
+    """
+    C, Hf, Wf = feat_map.shape
+    m = mask.view(1, Hf, Wf)  # (1, Hf, Wf)
+    denom = m.sum() + 1e-6
+    v = (feat_map * m).sum(dim=(1, 2)) / denom
+    return v
