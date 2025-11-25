@@ -15,10 +15,22 @@ import torch
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def get_device(prefer_gpu: bool = True) -> torch.device:
-    if prefer_gpu and torch.cuda.is_available():
-        return torch.device("cuda")
+#def get_device(prefer_gpu: bool = True) -> torch.device: # Default get device with someone with no GPU or has a Nvidia GPU
+ #   if prefer_gpu and torch.cuda.is_available():
+  #      return torch.device("cuda")
+   # return torch.device("cpu")
+
+def get_device(prefer_gpu: bool = True) -> torch.device: # For Yatin as he has a AMD GPU and not Nvidia
+    if prefer_gpu:
+        try:
+            import torch_directml
+            return torch_directml.device()
+        except ImportError:
+            pass
+        if torch.cuda.is_available():
+            return torch.device("cuda")
     return torch.device("cpu")
+
 
 
 def set_seed(seed: int = 42):

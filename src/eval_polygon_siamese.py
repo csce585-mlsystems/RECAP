@@ -3,12 +3,12 @@ eval_polygon_siamese.py
 
 Purpose:
   Evaluate the trained polygon-aware Siamese model on:
-    - Train split
-    - Test split
+    - train split
+    - test split
 
-  For each split, it saves:
-    - metrics JSON
-    - per-building prediction CSV
+  Uses tile-level dataset (TileBuildingDataset) but model now:
+    - ResNet-34 multi-scale backbone
+    - Rich change features: concat(v_pre, v_post, |diff|, diff)
 
 Outputs:
   metrics/polygon_siamese_train_eval.json
@@ -35,7 +35,7 @@ from sklearn.metrics import (
 import torch
 from torch.utils.data import DataLoader
 
-from .common import PROJECT_ROOT, get_device, set_seed, IDX2LABEL
+from .common import PROJECT_ROOT, get_device, set_seed, IDX2LABEL, LABEL2IDX
 from .dataset_tiles import TileBuildingDataset
 from .model_polygon_siamese import (
     SiameseTileBackbone,
@@ -44,31 +44,34 @@ from .model_polygon_siamese import (
     mask_pool_features,
 )
 
+
 CONFIG = {
     "DATA_ROOT": str(PROJECT_ROOT / "data" / "xBD Dataset"),
     "RESIZE": 512,
     "SEED": 42,
     "MODEL_PATH": str(PROJECT_ROOT / "models" / "polygon_siamese_best.pt"),
 
-    # limits for quick debugging; set to None for full evaluation
-    "LIMIT_TILES_TRAIN_EVAL": None,   # None -> all Train tiles
-    "LIMIT_TILES_TEST_EVAL": None,    # None -> all Test tiles
+    "LIMIT_TILES_TRAIN_EVAL": None,
+    "LIMIT_TILES_TEST_EVAL": None,
 
     "NUM_WORKERS": 0,
 }
 
 
+def make_change_features(v_pre: torch.Tensor, v_post: torch.Tensor) -> torch.Tensor:
+    diff = v_post - v_pre
+    abs_diff = torch.abs(diff)
+    feat = torch.cat([v_pre, v_post, abs_diff, diff], dim=0)
+    return feat
+
+
 def eval_split(
-    split_name: str,             # "train" or "test"
+    split_name: str,  # "train" or "test"
     cfg: Dict,
     backbone: SiameseTileBackbone,
     head: DamageHead,
     device: torch.device,
 ) -> Dict:
-    """
-    Evaluate on a given split ('train' or 'test') and return a metrics dict.
-    Also saves per-building predictions to CSV.
-    """
     print(f"\n[Eval] Split = {split_name}")
     if split_name == "train":
         limit_tiles = cfg["LIMIT_TILES_TRAIN_EVAL"]
@@ -87,7 +90,6 @@ def eval_split(
         batch_size=1,
         shuffle=False,
         num_workers=cfg["NUM_WORKERS"],
-        # IMPORTANT: match training – each batch is a single sample tuple
         collate_fn=lambda b: b[0],
     )
 
@@ -100,8 +102,6 @@ def eval_split(
 
     backbone.eval()
     head.eval()
-
-    from .common import LABEL2IDX  # only if you need subtype->idx mapping
 
     with csv_path.open("w", newline="") as f_csv:
         writer = csv.DictWriter(
@@ -128,49 +128,52 @@ def eval_split(
             orig_h,
         ) in tqdm(loader, desc=f"{split_name}-eval"):
 
-            # pre_t: (3,H,W)  or sometimes (B,3,H,W) if transforms, but
-            # our backbone handles both.
-            pre_t = pre_t.to(device)
-            post_t = post_t.to(device)
+            pre_t = pre_t.to(device)   # (1,3,H,W)
+            post_t = post_t.to(device) # (1,3,H,W)
             labels_t = labels_t.to(device)  # (#buildings,)
-            polys = polys_xy                # list of np.ndarray
+            polys = polys_xy
 
             if labels_t.numel() == 0:
                 continue
 
-            # Forward tiles through backbone
+            if isinstance(orig_w, torch.Tensor):
+                ow = float(orig_w.item())
+            else:
+                ow = float(orig_w)
+            if isinstance(orig_h, torch.Tensor):
+                oh = float(orig_h.item())
+            else:
+                oh = float(orig_h)
+
             with torch.no_grad():
                 F_pre = backbone(pre_t)[0]   # (C,Hf,Wf)
                 F_post = backbone(post_t)[0]
 
             C, Hf, Wf = F_pre.shape
-
-            feats_diff = []
-            gt_labels: List[int] = []
+            feats = []
+            gt_labels = []
             valid_polys = []
 
             for poly_xy, y in zip(polys, labels_t):
-                mask = rasterize_polygon_mask(
-                    poly_xy, Hf, Wf,
-                    int(orig_w), int(orig_h),
-                    device,
-                )
+                mask = rasterize_polygon_mask(poly_xy, Hf, Wf, ow, oh, device)
                 if mask.sum() < 1.0:
                     continue
                 v_pre = mask_pool_features(F_pre, mask)
                 v_post = mask_pool_features(F_post, mask)
-                feats_diff.append(torch.abs(v_post - v_pre))
+                feat = make_change_features(v_pre, v_post)
+
+                feats.append(feat)
                 gt_labels.append(int(y.item()))
                 valid_polys.append(poly_xy)
 
-            if len(feats_diff) == 0:
+            if len(feats) == 0:
                 continue
 
-            X = torch.stack(feats_diff, dim=0)  # (#bldg, C)
+            X = torch.stack(feats, dim=0)
             y_true = np.array(gt_labels, dtype=np.int64)
 
             with torch.no_grad():
-                logits = head(X)                     # (#bldg,4)
+                logits = head(X)
                 probs = torch.softmax(logits, dim=1)
                 confs, preds = probs.max(dim=1)
 
@@ -180,7 +183,7 @@ def eval_split(
             all_true.append(y_true)
             all_pred.append(y_pred)
 
-            # --- load UIDs from label JSON to include in CSV ---
+            # load UIDs
             label_json_path = (
                 Path(cfg["DATA_ROOT"]) / split_name / "labels" / f"{tile_id}.json"
             )
@@ -188,13 +191,11 @@ def eval_split(
                 with label_json_path.open("r") as f_lbl:
                     label_meta = json.load(f_lbl)
             except FileNotFoundError:
-                # Fallback: just write dummy UIDs
                 uids = ["" for _ in range(len(valid_polys))]
             else:
-                feats = label_meta["features"]["xy"]
-                # Collect all building UIDs with valid subtype
+                feats_json = label_meta["features"]["xy"]
                 all_uids_raw = []
-                for feat in feats:
+                for feat in feats_json:
                     props = feat["properties"]
                     if props.get("feature_type") != "building":
                         continue
@@ -202,14 +203,10 @@ def eval_split(
                     if subtype not in LABEL2IDX:
                         continue
                     all_uids_raw.append(props.get("uid", ""))
-
-                # Align to valid_polys count (we dropped some polygons if mask empty)
                 uids = all_uids_raw[: len(valid_polys)]
                 if len(uids) < len(valid_polys):
-                    # pad with empty if mismatch
                     uids += [""] * (len(valid_polys) - len(uids))
 
-            # write rows
             for uid, t_idx, p_idx, conf in zip(uids, y_true, y_pred, confs_np):
                 writer.writerow(
                     {
@@ -223,7 +220,6 @@ def eval_split(
                     }
                 )
 
-    # ---------- aggregate metrics ----------
     if not all_true:
         print(f"[Eval:{split_name}] No buildings evaluated.")
         metrics = {}
@@ -240,9 +236,7 @@ def eval_split(
             labels=[0, 1, 2, 3],
             zero_division=0,
         )
-        cm = confusion_matrix(
-            y_true_all, y_pred_all, labels=[0, 1, 2, 3]
-        ).tolist()
+        cm = confusion_matrix(y_true_all, y_pred_all, labels=[0, 1, 2, 3]).tolist()
         report = classification_report(
             y_true_all,
             y_pred_all,
@@ -290,17 +284,18 @@ def main():
     device = get_device(prefer_gpu=True)
     print("Device:", device)
 
-    # load model checkpoint
     ckpt_path = Path(cfg["MODEL_PATH"])
     assert ckpt_path.exists(), f"Model checkpoint not found: {ckpt_path}"
     ckpt = torch.load(ckpt_path, map_location=device)
 
+    # We load weights from checkpoint, so no need for ImageNet weights here
     backbone = SiameseTileBackbone(imagenet_weights=False).to(device)
-    head = DamageHead(in_dim=backbone.out_channels, n_classes=4).to(device)
+    head_in_dim = 4 * backbone.out_channels
+    head = DamageHead(in_dim=head_in_dim, n_classes=4).to(device)
+
     backbone.load_state_dict(ckpt["backbone"])
     head.load_state_dict(ckpt["head"])
 
-    # Evaluate both train and test splits
     _ = eval_split("train", cfg, backbone, head, device)
     _ = eval_split("test", cfg, backbone, head, device)
 

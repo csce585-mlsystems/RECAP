@@ -1,5 +1,6 @@
 """
 infer_random_tiles.py
+
 Purpose:
   Use the trained polygon-aware Siamese model to run on random Test tiles,
   and save:
@@ -11,15 +12,23 @@ from pathlib import Path
 import json
 import random
 import csv
+
 from typing import List
 
-import numpy as np
 from tqdm import tqdm
 
 import torch
 from torch.utils.data import DataLoader
 
-from .common import PROJECT_ROOT, get_device, set_seed, IDX2LABEL, save_overlay_polygon, to_numpy_image
+from .common import (
+    PROJECT_ROOT,
+    get_device,
+    set_seed,
+    IDX2LABEL,
+    LABEL2IDX,
+    save_overlay_polygon,
+    to_numpy_image,
+)
 from .dataset_tiles import TileBuildingDataset
 from .model_polygon_siamese import (
     SiameseTileBackbone,
@@ -33,12 +42,19 @@ CONFIG = {
     "DATA_ROOT": str(PROJECT_ROOT / "data" / "xBD Dataset"),
     "SPLIT": "test",
     "RESIZE": 512,
-    "N_TILES": 10,   # how many random tiles to run
+    "N_TILES": 10,
     "SEED": 123,
     "MODEL_PATH": str(PROJECT_ROOT / "models" / "polygon_siamese_best.pt"),
     "OUT_OVERLAY_DIR": str(PROJECT_ROOT / "artifacts" / "overlays"),
     "OUT_CSV_PATH": str(PROJECT_ROOT / "artifacts" / "csv" / "random_test_predictions.csv"),
 }
+
+
+def make_change_features(v_pre: torch.Tensor, v_post: torch.Tensor) -> torch.Tensor:
+    diff = v_post - v_pre
+    abs_diff = torch.abs(diff)
+    feat = torch.cat([v_pre, v_post, abs_diff, diff], dim=0)
+    return feat
 
 
 def main():
@@ -47,15 +63,19 @@ def main():
     device = get_device(prefer_gpu=True)
     print("Device:", device)
 
-    # build test dataset and subsample N_TILES tiles
-    full_ds = TileBuildingDataset(cfg["DATA_ROOT"], split=cfg["SPLIT"], resize=cfg["RESIZE"], limit_tiles=None)
+    # full test dataset
+    full_ds = TileBuildingDataset(
+        cfg["DATA_ROOT"], split=cfg["SPLIT"], resize=cfg["RESIZE"], limit_tiles=None
+    )
     n_tiles = len(full_ds)
     idxs = list(range(n_tiles))
     random.shuffle(idxs)
     idxs = idxs[: cfg["N_TILES"]]
-    sub_paths = [full_ds.tile_paths[i] for i in idxs]
+    sub_tile_ids = [full_ds.tile_ids[i] for i in idxs]
 
-    ds = TileBuildingDataset(cfg["DATA_ROOT"], split=cfg["SPLIT"], resize=cfg["RESIZE"], tile_paths=sub_paths)
+    ds = TileBuildingDataset(
+        cfg["DATA_ROOT"], split=cfg["SPLIT"], resize=cfg["RESIZE"], tile_ids=sub_tile_ids
+    )
     loader = DataLoader(ds, batch_size=1, shuffle=False, collate_fn=lambda b: b[0])
 
     # load model
@@ -64,7 +84,8 @@ def main():
     ckpt = torch.load(ckpt_path, map_location=device)
 
     backbone = SiameseTileBackbone(imagenet_weights=False).to(device)
-    head = DamageHead(in_dim=backbone.out_channels, n_classes=4).to(device)
+    head_in_dim = 4 * backbone.out_channels
+    head = DamageHead(in_dim=head_in_dim, n_classes=4).to(device)
     backbone.load_state_dict(ckpt["backbone"])
     head.load_state_dict(ckpt["head"])
     backbone.eval()
@@ -81,29 +102,40 @@ def main():
         pre_t = pre_t.to(device)
         post_t = post_t.to(device)
 
-        # encode
-        F_pre = backbone(pre_t)[0]   # (C,H',W')
-        F_post = backbone(post_t)[0]
-        C, Hf, Wf = F_pre.shape
+        with torch.no_grad():
+            F_pre = backbone(pre_t)[0]
+            F_post = backbone(post_t)[0]
 
-        feats_diff = []
+        C, Hf, Wf = F_pre.shape
+        feats = []
         poly_valid = []
+
+        if isinstance(orig_w, torch.Tensor):
+            ow = float(orig_w.item())
+        else:
+            ow = float(orig_w)
+        if isinstance(orig_h, torch.Tensor):
+            oh = float(orig_h.item())
+        else:
+            oh = float(orig_h)
+
         for poly_xy in polys_xy:
-            mask = rasterize_polygon_mask(poly_xy, Hf, Wf, orig_w, orig_h, device)
+            mask = rasterize_polygon_mask(poly_xy, Hf, Wf, ow, oh, device)
             if mask.sum() < 1.0:
                 continue
             v_pre = mask_pool_features(F_pre, mask)
             v_post = mask_pool_features(F_post, mask)
-            feats_diff.append(torch.abs(v_post - v_pre))
+            feat = make_change_features(v_pre, v_post)
+            feats.append(feat)
             poly_valid.append(poly_xy)
 
-        if len(feats_diff) == 0:
+        if len(feats) == 0:
             continue
 
-        X = torch.stack(feats_diff, dim=0)   # (#buildings,C)
+        X = torch.stack(feats, dim=0)
         with torch.no_grad():
             logits = head(X)
-            probs = torch.softmax(logits, dim=1)  # (#buildings,4)
+            probs = torch.softmax(logits, dim=1)
             confs, idxs_pred = probs.max(dim=1)
 
         post_rgb = to_numpy_image(post_t[0])
@@ -111,23 +143,21 @@ def main():
         save_path = out_overlay_dir / f"{tile_id}_overlay.png"
         save_overlay_polygon(post_rgb, poly_valid, pred_labels, save_path)
 
-        # for CSV, we need building IDs; get them from JSON
-        # reload the label json quickly:
+        # load label JSON to get UIDs
         lbl_path = Path(cfg["DATA_ROOT"]) / cfg["SPLIT"] / "labels" / f"{tile_id}.json"
         with open(lbl_path, "r") as f:
             meta = json.load(f)
-        feats = meta["features"]["xy"]
+        feats_json = meta["features"]["xy"]
         uids = []
-        for feat in feats:
+        for feat in feats_json:
             props = feat["properties"]
             if props.get("feature_type") != "building":
                 continue
             subtype = props.get("subtype", "")
-            if subtype not in IDX2LABEL.values():
+            if subtype not in LABEL2IDX:
                 continue
             uids.append(props.get("uid", ""))
 
-        # align uids to valid polys (assume same order after filtering)
         uids = uids[: len(poly_valid)]
 
         for uid, lab, conf in zip(uids, pred_labels, confs.detach().cpu().numpy()):
@@ -140,7 +170,6 @@ def main():
                 }
             )
 
-    # write CSV
     with out_csv_path.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=["tile_id", "uid", "pred_label", "confidence"])
         writer.writeheader()

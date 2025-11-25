@@ -1,25 +1,19 @@
 """
 train_polygon_siamese.py
-Purpose:
-  Train the polygon-aware tile-level Siamese model on xBD.
 
-High-level idea:
-  - Each training sample is one post-disaster tile + its matching pre-disaster tile.
-  - For that tile we also get:
-      - list of building polygons (in xy pixel coordinates)
-      - one damage label per building (0=no, 1=minor, 2=major, 3=destroyed)
-  - Pipeline:
-      1) Encode pre and post tiles with a shared ResNet-18 backbone.
-      2) For each polygon, rasterize a mask on the feature map and average-pool features.
-      3) Take |F_post - F_pre| as the "change" vector for that building.
-      4) Classify into 4 damage classes with a small MLP head.
-  - Loss:
-      - Class-weighted cross-entropy (fixed weights to fight imbalance).
-      - No ordinal/temperature scaling to keep it simpler.
+Purpose:
+  Train the polygon-aware Siamese model on xBD using:
+
+    - ResNet-34 backbone with multi-scale features (layer2+3+4).
+    - Per-building dataset (BuildingChangeDataset) with class-balanced sampling.
+    - Rich change representation per building:
+        feat = concat(v_pre, v_post, |diff|, diff).
+    - Deeper MLP head with dropout.
+    - Cosine learning rate schedule.
 """
 
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict
 
 import numpy as np
 from tqdm import tqdm
@@ -28,10 +22,10 @@ from sklearn.metrics import f1_score, classification_report
 import torch
 import torch.nn.functional as F
 from torch import nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 
 from .common import PROJECT_ROOT, get_device, set_seed, IDX2LABEL
-from .dataset_tiles import TileBuildingDataset
+from .dataset_tiles import BuildingChangeDataset
 from .model_polygon_siamese import (
     SiameseTileBackbone,
     DamageHead,
@@ -39,101 +33,111 @@ from .model_polygon_siamese import (
     mask_pool_features,
 )
 
-# ---------------- CONFIG (easy to edit) ----------------
+# ---------------- CONFIG ----------------
 CONFIG: Dict = {
     # data
     "DATA_ROOT": str(PROJECT_ROOT / "data" / "xBD Dataset"),
-    "TRAIN_SPLIT": "train",   # we split this into train/val inside the script
+    "TRAIN_SPLIT": "train",
     "RESIZE": 512,
 
     # training hyperparams
-    "EPOCHS": 22, #15 for cpu and 22 for gpu             # for full run; start with 3–5 when debugging
-    "LR": 1e-4, #1e-4 for gpu and 3e-4 for cpu
-    "BATCH_TILES": 2, #1 for CPU and 2 for GPU        # one tile at a time (variable #buildings)
-    "LIMIT_TILES_TRAIN": None,
-    "LIMIT_TILES_VAL": None,
+    "EPOCHS": 30,              # tweak depending on GPU/CPU
+    "LR": 2e-4, #3e-4 if no GPU and 2e-4 if GPU
+    "BATCH_BUILDINGS": 512, #64 if no GPU an 512 is GPU     # per-building batch size (reduce if OOM)
+    "LIMIT_TILES_TRAIN": None, # None = all tiles
 
     # model
-    "IMAGENET_BACKBONE": True,      # use resnet18 ImageNet weights
-    "CLASS_WEIGHTS": [0.25, 1.5, 2.0, 1.75],  # [no, minor, major, destroyed]
-    "ORD_LOSS_WEIGHT": 0.0,         # keep at 0.0 (no ordinal reg for now)
+    "IMAGENET_BACKBONE": True,
+    "CLASS_WEIGHTS": [0.5, 1.2, 1.5, 1.5],  # [no, minor, major, destroyed]
+    "ORD_LOSS_WEIGHT": 0.0,   # keep off for now
 
     # misc
     "SEED": 42,
-    "NUM_WORKERS": 0,   # 0 = safer cross-platform; increase if you want speed
+    "NUM_WORKERS": 4, # 0 if no GPU and 4 if GPU
     "SAVE_BEST_PATH": str(PROJECT_ROOT / "models" / "polygon_siamese_best.pt"),
 }
 
 
-# -------------------------------------------------------
-# Dataset construction
-# -------------------------------------------------------
-def build_datasets(cfg: Dict) -> Tuple[TileBuildingDataset, TileBuildingDataset]:
-    """
-    Build Train/Val splits from the xBD 'train' split.
-
-    We:
-      - Load all tiles from DATA_ROOT / TRAIN_SPLIT.
-      - Randomly shuffle with a fixed SEED.
-      - Use 80% tiles as train, 20% as val.
-    """
-    root = cfg["DATA_ROOT"]
-    split = cfg["TRAIN_SPLIT"]
-    resize = cfg["RESIZE"]
-
-    # Full dataset of tiles (this will scan all *_post_disaster.png under images/)
-    full_ds = TileBuildingDataset(root, split=split, resize=resize, limit_tiles=None)
-    n = len(full_ds)
-    idxs = np.arange(n)
-    rng = np.random.default_rng(cfg["SEED"])
-    rng.shuffle(idxs)
-
-    n_train = int(0.8 * n)
-    train_idxs = idxs[:n_train]
-    val_idxs = idxs[n_train:]
-
-    # Re-use the same tile_ids but split
-    tile_ids = full_ds.tile_ids
-    train_ids = [tile_ids[i] for i in train_idxs]
-    val_ids = [tile_ids[i] for i in val_idxs]
-
-    train_ds = TileBuildingDataset(
-        root,
-        split=split,
-        resize=resize,
-        tile_ids=train_ids,
+def build_train_dataset(cfg: Dict) -> BuildingChangeDataset:
+    ds = BuildingChangeDataset(
+        root=cfg["DATA_ROOT"],
+        split=cfg["TRAIN_SPLIT"],
+        resize=cfg["RESIZE"],
         limit_tiles=cfg["LIMIT_TILES_TRAIN"],
+        use_augmentation=True,
     )
-    val_ds = TileBuildingDataset(
-        root,
-        split=split,
-        resize=resize,
-        tile_ids=val_ids,
-        limit_tiles=cfg["LIMIT_TILES_VAL"],
-    )
-    return train_ds, val_ds
+    return ds
 
 
-# -------------------------------------------------------
-# Class counting & weighting
-# -------------------------------------------------------
-def compute_class_counts(ds: TileBuildingDataset) -> np.ndarray:
-    """
-    Count how many buildings per class in the dataset, for reporting
-    and to sanity-check imbalance.
-    """
+def compute_class_counts(labels_tensor: torch.Tensor) -> np.ndarray:
     counts = np.zeros(4, dtype=np.int64)
-    for _, _, _, labels, _, _, _ in tqdm(ds, desc="class-counts"):
-        if labels.numel() == 0:
-            continue
-        for y in labels.numpy():
-            counts[y] += 1
+    for y in labels_tensor:
+        counts[int(y.item())] += 1
     return counts
 
 
-# -------------------------------------------------------
-# Training / eval loops
-# -------------------------------------------------------
+def build_sampler(labels_tensor: torch.Tensor) -> WeightedRandomSampler:
+    """
+    Build a WeightedRandomSampler to approximately balance classes at building level.
+    """
+    labels_np = labels_tensor.numpy()
+    class_counts = np.bincount(labels_np, minlength=4)
+    class_weights = 1.0 / (class_counts + 1e-6)
+    class_weights = class_weights / class_weights.sum() * len(class_weights)
+
+    sample_weights = class_weights[labels_np]
+    sample_weights = torch.tensor(sample_weights, dtype=torch.float32)
+    sampler = WeightedRandomSampler(
+        weights=sample_weights,
+        num_samples=len(labels_tensor),
+        replacement=True,
+    )
+    return sampler, class_counts, class_weights
+
+
+def make_change_features(
+    v_pre: torch.Tensor,  # (C,)
+    v_post: torch.Tensor, # (C,)
+) -> torch.Tensor:
+    """
+    Build rich change feature:
+        diff = v_post - v_pre
+        abs_diff = |diff|
+        feat = concat(v_pre, v_post, abs_diff, diff) ∈ R^(4C)
+    """
+    diff = v_post - v_pre
+    abs_diff = torch.abs(diff)
+    feat = torch.cat([v_pre, v_post, abs_diff, diff], dim=0)
+    return feat
+
+
+def building_collate(batch):
+    """
+    Custom collate for BuildingChangeDataset.
+
+    batch: list of
+      (pre, post, poly_xy, label, tile_id, orig_w, orig_h)
+
+    Returns:
+      pre_batch      : (B,3,H,W) tensor
+      post_batch     : (B,3,H,W) tensor
+      polys_batch    : list of np.ndarray (one per building)
+      labels_batch   : (B,) tensor
+      tile_ids       : list[str]
+      orig_w_batch   : list[int]
+      orig_h_batch   : list[int]
+    """
+    pre_list, post_list, poly_list, label_list, tile_ids, orig_w_list, orig_h_list = zip(*batch)
+    pre_batch = torch.stack(pre_list, dim=0)
+    post_batch = torch.stack(post_list, dim=0)
+    labels_batch = torch.stack(label_list, dim=0)
+    polys_batch = list(poly_list)
+    tile_ids = list(tile_ids)
+    orig_w_batch = list(orig_w_list)
+    orig_h_batch = list(orig_h_list)
+    return pre_batch, post_batch, polys_batch, labels_batch, tile_ids, orig_w_batch, orig_h_batch
+
+
 def train_one_epoch(
     backbone: nn.Module,
     head: nn.Module,
@@ -143,13 +147,6 @@ def train_one_epoch(
     device: torch.device,
     ord_loss_weight: float,
 ) -> Dict[str, float]:
-    """
-    One training epoch:
-      - loop over tiles
-      - encode pre/post
-      - mask-pool per building
-      - class-balanced CE + (optional) ordinal regularizer
-    """
     backbone.train()
     head.train()
     ce_weight = class_weights.to(device)
@@ -159,78 +156,69 @@ def train_one_epoch(
     total_loss = 0.0
     n_buildings = 0
 
-    for pre_t, post_t, polys, labels_t, _, orig_w, orig_h in tqdm(
-        loader, desc="train", leave=False
-    ):
-        # pre_t/post_t come from Dataset as (1, 3, H, W)
-        pre_t = pre_t.to(device)
-        post_t = post_t.to(device)
-        labels_t = labels_t.to(device)  # shape (#buildings,)
+    for (
+        pre_batch,
+        post_batch,
+        polys_batch,
+        labels_batch,
+        tile_ids,
+        orig_w_batch,
+        orig_h_batch,
+    ) in tqdm(loader, desc="train", leave=False):
 
-        if labels_t.numel() == 0:
-            continue
+        pre_batch = pre_batch.to(device)   # (B,3,H,W)
+        post_batch = post_batch.to(device) # (B,3,H,W)
+        labels_batch = labels_batch.to(device)  # (B,)
 
-        # orig_w, orig_h might be ints or tensors; normalize to floats
-        if isinstance(orig_w, torch.Tensor):
-            ow = float(orig_w.item())
-        else:
-            ow = float(orig_w)
-        if isinstance(orig_h, torch.Tensor):
-            oh = float(orig_h.item())
-        else:
-            oh = float(orig_h)
-
+        B = pre_batch.shape[0]
         optimizer.zero_grad()
 
-        # encode tiles: backbone returns (B, C, Hf, Wf); B=1 so index [0]
-        F_pre = backbone(pre_t)[0]   # (C,Hf,Wf)
-        F_post = backbone(post_t)[0]
-
-        C, Hf, Wf = F_pre.shape
+        # Encode tiles once per batch
+        F_pre_batch = backbone(pre_batch)   # (B,C,Hf,Wf)
+        F_post_batch = backbone(post_batch) # (B,C,Hf,Wf)
 
         feats = []
         ys = []
 
-        # Build per-building features
-        for poly_xy, y in zip(polys, labels_t):
+        for b in range(B):
+            y = labels_batch[b]
+            poly_xy = polys_batch[b]
+
+            if isinstance(orig_w_batch[b], torch.Tensor):
+                ow = float(orig_w_batch[b].item())
+            else:
+                ow = float(orig_w_batch[b])
+            if isinstance(orig_h_batch[b], torch.Tensor):
+                oh = float(orig_h_batch[b].item())
+            else:
+                oh = float(orig_h_batch[b])
+
+            F_pre = F_pre_batch[b]   # (C,Hf,Wf)
+            F_post = F_post_batch[b] # (C,Hf,Wf)
+
+            C, Hf, Wf = F_pre.shape
             mask = rasterize_polygon_mask(poly_xy, Hf, Wf, ow, oh, device)
             if mask.sum() < 1.0:
                 continue
+
             v_pre = mask_pool_features(F_pre, mask)
             v_post = mask_pool_features(F_post, mask)
-            feats.append(torch.abs(v_post - v_pre))
+            feat = make_change_features(v_pre, v_post)  # (4C,)
+
+            feats.append(feat)
             ys.append(int(y.item()))
 
         if len(feats) == 0:
             continue
 
-        X = torch.stack(feats, dim=0)  # (#buildings, C)
+        X = torch.stack(feats, dim=0)  # (N_buildings_in_batch, 4C)
         y_true = torch.tensor(ys, device=device, dtype=torch.long)
 
-        # ---- undersample "no-damage" within each tile to fight imbalance ----
-        idx_all = torch.arange(y_true.numel(), device=device)
-        idx_0 = idx_all[y_true == 0]
-        idx_pos = idx_all[y_true != 0]
+        logits = head(X)  # (N,4)
 
-        if idx_pos.numel() > 0 and idx_0.numel() > 0:
-            max_0 = int(2.0 * idx_pos.numel())  # at most 2x positives
-            if idx_0.numel() > max_0:
-                perm = torch.randperm(idx_0.numel(), device=device)[:max_0]
-                idx_0_keep = idx_0[perm]
-            else:
-                idx_0_keep = idx_0
-            keep_idx = torch.cat([idx_0_keep, idx_pos], dim=0)
-            X = X[keep_idx]
-            y_true = y_true[keep_idx]
-        # --------------------------------------------------------------------
-
-        logits = head(X)  # (#buildings, 4)
-
-        # class-weighted CE
         ce = F.cross_entropy(logits, y_true, weight=ce_weight)
-
-        # optional ordinal loss (we keep this OFF by default)
         loss = ce
+
         if ord_loss_weight > 0.0:
             probs = torch.softmax(logits, dim=1)
             idxs = torch.arange(4, device=device).float()
@@ -255,10 +243,7 @@ def train_one_epoch(
     all_pred = np.concatenate(all_pred)
     macro_f1 = f1_score(all_y, all_pred, average="macro")
 
-    return {
-        "loss": total_loss / n_buildings,
-        "macro_f1": macro_f1,
-    }
+    return {"loss": total_loss / n_buildings, "macro_f1": macro_f1}
 
 
 @torch.no_grad()
@@ -268,50 +253,60 @@ def eval_one_epoch(
     loader: DataLoader,
     device: torch.device,
 ) -> Dict[str, float]:
-    """
-    Validation loop:
-      - same as train, but no gradients
-      - returns macro-F1 and full classification_report string
-    """
     backbone.eval()
     head.eval()
 
     all_y = []
     all_pred = []
 
-    for pre_t, post_t, polys, labels_t, _, orig_w, orig_h in tqdm(
-        loader, desc="val", leave=False
-    ):
-        pre_t = pre_t.to(device)
-        post_t = post_t.to(device)
-        labels_t = labels_t.to(device)
+    for (
+        pre_batch,
+        post_batch,
+        polys_batch,
+        labels_batch,
+        tile_ids,
+        orig_w_batch,
+        orig_h_batch,
+    ) in tqdm(loader, desc="val", leave=False):
 
-        if labels_t.numel() == 0:
-            continue
+        pre_batch = pre_batch.to(device)
+        post_batch = post_batch.to(device)
+        labels_batch = labels_batch.to(device)
 
-        if isinstance(orig_w, torch.Tensor):
-            ow = float(orig_w.item())
-        else:
-            ow = float(orig_w)
-        if isinstance(orig_h, torch.Tensor):
-            oh = float(orig_h.item())
-        else:
-            oh = float(orig_h)
+        B = pre_batch.shape[0]
 
-        F_pre = backbone(pre_t)[0]
-        F_post = backbone(post_t)[0]
+        F_pre_batch = backbone(pre_batch)
+        F_post_batch = backbone(post_batch)
 
-        C, Hf, Wf = F_pre.shape
         feats = []
         ys = []
 
-        for poly_xy, y in zip(polys, labels_t):
+        for b in range(B):
+            y = labels_batch[b]
+            poly_xy = polys_batch[b]
+
+            if isinstance(orig_w_batch[b], torch.Tensor):
+                ow = float(orig_w_batch[b].item())
+            else:
+                ow = float(orig_w_batch[b])
+            if isinstance(orig_h_batch[b], torch.Tensor):
+                oh = float(orig_h_batch[b].item())
+            else:
+                oh = float(orig_h_batch[b])
+
+            F_pre = F_pre_batch[b]
+            F_post = F_post_batch[b]
+
+            C, Hf, Wf = F_pre.shape
             mask = rasterize_polygon_mask(poly_xy, Hf, Wf, ow, oh, device)
             if mask.sum() < 1.0:
                 continue
+
             v_pre = mask_pool_features(F_pre, mask)
             v_post = mask_pool_features(F_post, mask)
-            feats.append(torch.abs(v_post - v_pre))
+            feat = make_change_features(v_pre, v_post)
+
+            feats.append(feat)
             ys.append(int(y.item()))
 
         if len(feats) == 0:
@@ -342,46 +337,59 @@ def eval_one_epoch(
     return {"macro_f1": macro_f1, "report": report}
 
 
-# -------------------------------------------------------
-# Main
-# -------------------------------------------------------
 def main():
     cfg = CONFIG
     set_seed(cfg["SEED"])
     device = get_device(prefer_gpu=True)
     print("Device:", device)
 
-    # Build datasets and loaders
-    train_ds, val_ds = build_datasets(cfg)
-    print(f"Train tiles: {len(train_ds)}, Val tiles: {len(val_ds)}")
+    # Dataset + sampler
+    train_ds = build_train_dataset(cfg)
+    print(f"Train buildings: {len(train_ds)}")
 
-    train_counts = compute_class_counts(train_ds)
-    print("Class counts (train):", train_counts)
+    sampler, class_counts, class_weights_sampler = build_sampler(train_ds.labels_tensor)
+    print("Building-level class counts:", class_counts)
+    print("Sampler class weights:", class_weights_sampler)
 
-    cb_weights = torch.tensor(cfg["CLASS_WEIGHTS"], dtype=torch.float32)
-    print("Manual class weights:", cb_weights.numpy())
+    class_weights_loss = torch.tensor(cfg["CLASS_WEIGHTS"], dtype=torch.float32)
+    print("Loss class weights:", class_weights_loss.numpy())
 
     train_loader = DataLoader(
         train_ds,
-        batch_size=cfg["BATCH_TILES"],
-        shuffle=True,
+        batch_size=cfg["BATCH_BUILDINGS"],
+        sampler=sampler,
         num_workers=cfg["NUM_WORKERS"],
-        collate_fn=lambda batch: batch[0],  # variable-length buildings → keep single sample
+        collate_fn=building_collate,
+    )
+
+    # Validation dataset – same split, no augmentation, no sampler
+    val_ds = BuildingChangeDataset(
+        root=cfg["DATA_ROOT"],
+        split=cfg["TRAIN_SPLIT"],
+        resize=cfg["RESIZE"],
+        limit_tiles=cfg["LIMIT_TILES_TRAIN"],
+        use_augmentation=False,
     )
     val_loader = DataLoader(
         val_ds,
-        batch_size=1,
+        batch_size=cfg["BATCH_BUILDINGS"],
         shuffle=False,
         num_workers=cfg["NUM_WORKERS"],
-        collate_fn=lambda batch: batch[0],
+        collate_fn=building_collate,
     )
 
-    # Build model
-    backbone = SiameseTileBackbone(imagenet_weights=cfg["IMAGENET_BACKBONE"]).to(device)
-    head = DamageHead(in_dim=backbone.out_channels, n_classes=4).to(device)
+    # Model
+    backbone = SiameseTileBackbone(
+        imagenet_weights=cfg["IMAGENET_BACKBONE"],
+    ).to(device)
+    head_in_dim = 4 * backbone.out_channels
+    head = DamageHead(in_dim=head_in_dim, n_classes=4).to(device)
 
     params = list(backbone.parameters()) + list(head.parameters())
     optimizer = torch.optim.AdamW(params, lr=cfg["LR"], weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=cfg["EPOCHS"], eta_min=1e-6
+    )
 
     best_val_f1 = 0.0
     save_path = Path(cfg["SAVE_BEST_PATH"])
@@ -389,12 +397,13 @@ def main():
 
     for epoch in range(1, cfg["EPOCHS"] + 1):
         print(f"\nEpoch {epoch}/{cfg['EPOCHS']}")
+
         tr_stats = train_one_epoch(
             backbone,
             head,
             train_loader,
             optimizer,
-            cb_weights,
+            class_weights_loss,
             device,
             cfg["ORD_LOSS_WEIGHT"],
         )
@@ -415,6 +424,8 @@ def main():
                 save_path,
             )
             print(f"[*] Saved new best model to {save_path} (macro-F1={best_val_f1:.4f})")
+
+        scheduler.step()
 
 
 if __name__ == "__main__":
