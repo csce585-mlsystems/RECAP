@@ -4,11 +4,11 @@ train_polygon_siamese.py
 Purpose:
   Train the polygon-aware Siamese model on xBD using:
 
-    - ResNet-34 backbone with multi-scale features (layer2+3+4).
+    - ResNet-34 backbone with multi-scale features (implemented in SiameseTileBackbone).
     - Per-building dataset (BuildingChangeDataset) with class-balanced sampling.
     - Rich change representation per building:
         feat = concat(v_pre, v_post, |diff|, diff).
-    - Deeper MLP head with dropout.
+    - Deeper MLP head with dropout (DamageHead).
     - Cosine learning rate schedule.
 """
 
@@ -40,32 +40,40 @@ CONFIG: Dict = {
     "TRAIN_SPLIT": "train",
     "RESIZE": 512,
 
-    # training hyperparams
-    "EPOCHS": 30,               # tweak depending on GPU/CPU
-    "LR": 2e-4,                 # 3e-4 if only CPU, 2e-4 if GPU
-    # SAFER default so it does not blow up VRAM on DirectML / GPU or RAM on Mac:
-    "BATCH_BUILDINGS": 8,       # per-building batch size (you can try 16 later if stable)
-    "LIMIT_TILES_TRAIN": None,  # None = all tiles
+    # base training hyperparams
+    "EPOCHS": 30,
+    "LR": 2e-4,
+    "WEIGHT_DECAY": 1e-4,
+
+    # CPU vs GPU specific settings
+    # (we pick at runtime based on device.type)
+    "SAMPLES_PER_EPOCH_GPU": 80_000,   # number of buildings per epoch on GPU
+    "SAMPLES_PER_EPOCH_CPU": 30_000,   # fewer for CPU so it finishes
+    "BATCH_BUILDINGS_GPU": 64,         # per-building batch size on GPU
+    "BATCH_BUILDINGS_CPU": 8,          # per-building batch size on CPU
+    "NUM_WORKERS_GPU": 4,
+    "NUM_WORKERS_CPU": 0,              # safer on Mac / CPU
 
     # model
     "IMAGENET_BACKBONE": True,
     "CLASS_WEIGHTS": [0.5, 1.2, 1.5, 1.5],  # [no, minor, major, destroyed]
-    "ORD_LOSS_WEIGHT": 0.0,    # keep off for now
+    "ORD_LOSS_WEIGHT": 0.0,                 # keep off for now
 
     # misc
     "SEED": 42,
-    # 0 is safest across Mac + Windows + DirectML; increase only if you know workers behave:
-    "NUM_WORKERS": 0,
     "SAVE_BEST_PATH": str(PROJECT_ROOT / "models" / "polygon_siamese_best.pt"),
 }
 
 
+# -------------------------------------------------------
+# Dataset + sampler helpers
+# -------------------------------------------------------
 def build_train_dataset(cfg: Dict) -> BuildingChangeDataset:
     ds = BuildingChangeDataset(
         root=cfg["DATA_ROOT"],
         split=cfg["TRAIN_SPLIT"],
         resize=cfg["RESIZE"],
-        limit_tiles=cfg["LIMIT_TILES_TRAIN"],
+        limit_tiles=None,          # all tiles by default
         use_augmentation=True,
     )
     return ds
@@ -78,30 +86,44 @@ def compute_class_counts(labels_tensor: torch.Tensor) -> np.ndarray:
     return counts
 
 
-def build_sampler(labels_tensor: torch.Tensor):
+def build_sampler(
+    labels_tensor: torch.Tensor,
+    num_samples_per_epoch: int,
+):
     """
     Build a WeightedRandomSampler to approximately balance classes at building level.
-    Returns:
-      sampler, class_counts, class_weights
+
+    We:
+      - compute inverse-frequency class weights
+      - assign each building a weight based on its class
+      - sample with replacement for num_samples_per_epoch samples
     """
     labels_np = labels_tensor.numpy()
     class_counts = np.bincount(labels_np, minlength=4)
+
+    # inverse frequency weights
     class_weights = 1.0 / (class_counts + 1e-6)
     class_weights = class_weights / class_weights.sum() * len(class_weights)
 
     sample_weights = class_weights[labels_np]
     sample_weights = torch.tensor(sample_weights, dtype=torch.float32)
+
+    num_samples = min(num_samples_per_epoch, len(labels_tensor))
+
     sampler = WeightedRandomSampler(
         weights=sample_weights,
-        num_samples=len(labels_tensor),
+        num_samples=num_samples,
         replacement=True,
     )
     return sampler, class_counts, class_weights
 
 
+# -------------------------------------------------------
+# Feature construction
+# -------------------------------------------------------
 def make_change_features(
-    v_pre: torch.Tensor,  # (C,)
-    v_post: torch.Tensor, # (C,)
+    v_pre: torch.Tensor,   # (C,)
+    v_post: torch.Tensor,  # (C,)
 ) -> torch.Tensor:
     """
     Build rich change feature:
@@ -115,6 +137,9 @@ def make_change_features(
     return feat
 
 
+# -------------------------------------------------------
+# Collate function for per-building dataset
+# -------------------------------------------------------
 def building_collate(batch):
     """
     Custom collate for BuildingChangeDataset.
@@ -131,7 +156,9 @@ def building_collate(batch):
       orig_w_batch   : list[int]
       orig_h_batch   : list[int]
     """
-    pre_list, post_list, poly_list, label_list, tile_ids, orig_w_list, orig_h_list = zip(*batch)
+    pre_list, post_list, poly_list, label_list, tile_ids, orig_w_list, orig_h_list = zip(
+        *batch
+    )
     pre_batch = torch.stack(pre_list, dim=0)
     post_batch = torch.stack(post_list, dim=0)
     labels_batch = torch.stack(label_list, dim=0)
@@ -142,6 +169,9 @@ def building_collate(batch):
     return pre_batch, post_batch, polys_batch, labels_batch, tile_ids, orig_w_batch, orig_h_batch
 
 
+# -------------------------------------------------------
+# Training / validation loops
+# -------------------------------------------------------
 def train_one_epoch(
     backbone: nn.Module,
     head: nn.Module,
@@ -220,9 +250,11 @@ def train_one_epoch(
 
         logits = head(X)  # (N,4)
 
+        # class-weighted CE
         ce = F.cross_entropy(logits, y_true, weight=ce_weight)
         loss = ce
 
+        # optional ordinal loss (kept off by default)
         if ord_loss_weight > 0.0:
             probs = torch.softmax(logits, dim=1)
             idxs = torch.arange(4, device=device).float()
@@ -341,17 +373,38 @@ def eval_one_epoch(
     return {"macro_f1": macro_f1, "report": report}
 
 
+# -------------------------------------------------------
+# Main
+# -------------------------------------------------------
 def main():
     cfg = CONFIG
     set_seed(cfg["SEED"])
     device = get_device(prefer_gpu=True)
     print("Device:", device)
 
+    is_cpu = (device.type == "cpu")
+
+    # Pick CPU/GPU-aware settings
+    samples_per_epoch = (
+        cfg["SAMPLES_PER_EPOCH_CPU"] if is_cpu else cfg["SAMPLES_PER_EPOCH_GPU"]
+    )
+    batch_buildings = (
+        cfg["BATCH_BUILDINGS_CPU"] if is_cpu else cfg["BATCH_BUILDINGS_GPU"]
+    )
+    num_workers = cfg["NUM_WORKERS_CPU"] if is_cpu else cfg["NUM_WORKERS_GPU"]
+
+    print(f"Using batch size (buildings): {batch_buildings}")
+    print(f"Samples per epoch: {samples_per_epoch}")
+    print(f"Num workers: {num_workers}")
+
     # Dataset + sampler
     train_ds = build_train_dataset(cfg)
     print(f"Train buildings: {len(train_ds)}")
 
-    sampler, class_counts, class_weights_sampler = build_sampler(train_ds.labels_tensor)
+    sampler, class_counts, class_weights_sampler = build_sampler(
+        train_ds.labels_tensor,
+        samples_per_epoch,
+    )
     print("Building-level class counts:", class_counts)
     print("Sampler class weights:", class_weights_sampler)
 
@@ -360,9 +413,9 @@ def main():
 
     train_loader = DataLoader(
         train_ds,
-        batch_size=cfg["BATCH_BUILDINGS"],
+        batch_size=batch_buildings,
         sampler=sampler,
-        num_workers=cfg["NUM_WORKERS"],
+        num_workers=num_workers,
         collate_fn=building_collate,
     )
 
@@ -371,14 +424,14 @@ def main():
         root=cfg["DATA_ROOT"],
         split=cfg["TRAIN_SPLIT"],
         resize=cfg["RESIZE"],
-        limit_tiles=cfg["LIMIT_TILES_TRAIN"],
+        limit_tiles=None,
         use_augmentation=False,
     )
     val_loader = DataLoader(
         val_ds,
-        batch_size=cfg["BATCH_BUILDINGS"],
+        batch_size=batch_buildings,
         shuffle=False,
-        num_workers=cfg["NUM_WORKERS"],
+        num_workers=num_workers,
         collate_fn=building_collate,
     )
 
@@ -390,7 +443,14 @@ def main():
     head = DamageHead(in_dim=head_in_dim, n_classes=4).to(device)
 
     params = list(backbone.parameters()) + list(head.parameters())
-    optimizer = torch.optim.AdamW(params, lr=cfg["LR"], weight_decay=1e-4)
+
+    # AdamW with foreach=False → fewer DirectML fallbacks
+    optimizer = torch.optim.AdamW(
+        params,
+        lr=cfg["LR"],
+        weight_decay=cfg["WEIGHT_DECAY"],
+        foreach=False,
+    )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=cfg["EPOCHS"], eta_min=1e-6
     )
@@ -411,7 +471,10 @@ def main():
             device,
             cfg["ORD_LOSS_WEIGHT"],
         )
-        print(f"Train loss: {tr_stats['loss']:.4f}, macro-F1: {tr_stats['macro_f1']:.4f}")
+        print(
+            f"Train loss: {tr_stats['loss']:.4f}, "
+            f"macro-F1: {tr_stats['macro_f1']:.4f}"
+        )
 
         val_stats = eval_one_epoch(backbone, head, val_loader, device)
         print(f"Val macro-F1: {val_stats['macro_f1']:.4f}")
@@ -427,7 +490,10 @@ def main():
                 },
                 save_path,
             )
-            print(f"[*] Saved new best model to {save_path} (macro-F1={best_val_f1:.4f})")
+            print(
+                f"[*] Saved new best model to {save_path} "
+                f"(macro-F1={best_val_f1:.4f})"
+            )
 
         scheduler.step()
 
