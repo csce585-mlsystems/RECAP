@@ -41,19 +41,21 @@ CONFIG: Dict = {
     "RESIZE": 512,
 
     # training hyperparams
-    "EPOCHS": 30,              # tweak depending on GPU/CPU
-    "LR": 2e-4, #3e-4 if no GPU and 2e-4 if GPU
-    "BATCH_BUILDINGS": 512, #64 if no GPU an 512 is GPU     # per-building batch size (reduce if OOM)
-    "LIMIT_TILES_TRAIN": None, # None = all tiles
+    "EPOCHS": 30,               # tweak depending on GPU/CPU
+    "LR": 2e-4,                 # 3e-4 if only CPU, 2e-4 if GPU
+    # SAFER default so it does not blow up VRAM on DirectML / GPU or RAM on Mac:
+    "BATCH_BUILDINGS": 8,       # per-building batch size (you can try 16 later if stable)
+    "LIMIT_TILES_TRAIN": None,  # None = all tiles
 
     # model
     "IMAGENET_BACKBONE": True,
     "CLASS_WEIGHTS": [0.5, 1.2, 1.5, 1.5],  # [no, minor, major, destroyed]
-    "ORD_LOSS_WEIGHT": 0.0,   # keep off for now
+    "ORD_LOSS_WEIGHT": 0.0,    # keep off for now
 
     # misc
     "SEED": 42,
-    "NUM_WORKERS": 4, # 0 if no GPU and 4 if GPU
+    # 0 is safest across Mac + Windows + DirectML; increase only if you know workers behave:
+    "NUM_WORKERS": 0,
     "SAVE_BEST_PATH": str(PROJECT_ROOT / "models" / "polygon_siamese_best.pt"),
 }
 
@@ -76,9 +78,11 @@ def compute_class_counts(labels_tensor: torch.Tensor) -> np.ndarray:
     return counts
 
 
-def build_sampler(labels_tensor: torch.Tensor) -> WeightedRandomSampler:
+def build_sampler(labels_tensor: torch.Tensor):
     """
     Build a WeightedRandomSampler to approximately balance classes at building level.
+    Returns:
+      sampler, class_counts, class_weights
     """
     labels_np = labels_tensor.numpy()
     class_counts = np.bincount(labels_np, minlength=4)
@@ -172,8 +176,6 @@ def train_one_epoch(
 
         B = pre_batch.shape[0]
         optimizer.zero_grad()
-        
-        print("pre_batch shape:", pre_batch.shape, "device:", pre_batch.device)
 
         # Encode tiles once per batch
         F_pre_batch = backbone(pre_batch)   # (B,C,Hf,Wf)
