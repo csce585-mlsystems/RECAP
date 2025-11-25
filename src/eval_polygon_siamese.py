@@ -1,12 +1,14 @@
 """
 eval_polygon_siamese.py
+
 Purpose:
   Evaluate the trained polygon-aware Siamese model on:
-    - train split
-    - test split
-  and save:
-    - metrics JSON for each split
-    - per-building prediction CSVs for each split
+    - Train split
+    - Test split
+
+  For each split, it saves:
+    - metrics JSON
+    - per-building prediction CSV
 
 Outputs:
   metrics/polygon_siamese_train_eval.json
@@ -42,7 +44,6 @@ from .model_polygon_siamese import (
     mask_pool_features,
 )
 
-
 CONFIG = {
     "DATA_ROOT": str(PROJECT_ROOT / "data" / "xBD Dataset"),
     "RESIZE": 512,
@@ -50,15 +51,15 @@ CONFIG = {
     "MODEL_PATH": str(PROJECT_ROOT / "models" / "polygon_siamese_best.pt"),
 
     # limits for quick debugging; set to None for full evaluation
-    "LIMIT_TILES_TRAIN_EVAL": None,   # None -> all train tiles
-    "LIMIT_TILES_TEST_EVAL": None,    # None -> all test tiles
+    "LIMIT_TILES_TRAIN_EVAL": None,   # None -> all Train tiles
+    "LIMIT_TILES_TEST_EVAL": None,    # None -> all Test tiles
 
     "NUM_WORKERS": 0,
 }
 
 
 def eval_split(
-    split_name: str,
+    split_name: str,             # "train" or "test"
     cfg: Dict,
     backbone: SiameseTileBackbone,
     head: DamageHead,
@@ -86,25 +87,22 @@ def eval_split(
         batch_size=1,
         shuffle=False,
         num_workers=cfg["NUM_WORKERS"],
-        collate_fn=lambda b: b[0],  # B=1
+        # IMPORTANT: match training – each batch is a single sample tuple
+        collate_fn=lambda b: b[0],
     )
 
     all_true: List[np.ndarray] = []
     all_pred: List[np.ndarray] = []
 
+    metrics_dir = PROJECT_ROOT / "metrics"
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = metrics_dir / f"polygon_siamese_{split_name}_predictions.csv"
+
     backbone.eval()
     head.eval()
 
-    # ensure metric paths
-    metrics_dir = PROJECT_ROOT / "metrics"
-    metrics_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = metrics_dir / f"polygon_siamese_{split_name.lower()}_predictions.csv"
+    from .common import LABEL2IDX  # only if you need subtype->idx mapping
 
-    all_conf: List[np.ndarray] = []
-    all_tile_ids: List[str] = []
-    all_uids: List[str] = []
-
-    # open CSV writer
     with csv_path.open("w", newline="") as f_csv:
         writer = csv.DictWriter(
             f_csv,
@@ -120,38 +118,50 @@ def eval_split(
         )
         writer.writeheader()
 
-        for pre_t, post_t, polys_xy, labels_t, tile_id, orig_w, orig_h in tqdm(
-            loader, desc=f"{split_name}-eval"
-        ):
-            pre_t = pre_t.to(device).unsqueeze(0)  # (1,3,H,W)
-            post_t = post_t.to(device).unsqueeze(0)
-            labels_t = labels_t.to(device)
-            polys = polys_xy
-            orig_w = int(orig_w)
-            orig_h = int(orig_h)
+        for (
+            pre_t,
+            post_t,
+            polys_xy,
+            labels_t,
+            tile_id,
+            orig_w,
+            orig_h,
+        ) in tqdm(loader, desc=f"{split_name}-eval"):
+
+            # pre_t: (3,H,W)  or sometimes (B,3,H,W) if transforms, but
+            # our backbone handles both.
+            pre_t = pre_t.to(device)
+            post_t = post_t.to(device)
+            labels_t = labels_t.to(device)  # (#buildings,)
+            polys = polys_xy                # list of np.ndarray
 
             if labels_t.numel() == 0:
                 continue
 
-            # forward
+            # Forward tiles through backbone
             with torch.no_grad():
-                F_pre = backbone(pre_t)[0]   # (C,H',W')
+                F_pre = backbone(pre_t)[0]   # (C,Hf,Wf)
                 F_post = backbone(post_t)[0]
 
             C, Hf, Wf = F_pre.shape
+
             feats_diff = []
-            gt_labels = []
-            poly_valid = []
+            gt_labels: List[int] = []
+            valid_polys = []
 
             for poly_xy, y in zip(polys, labels_t):
-                mask = rasterize_polygon_mask(poly_xy, Hf, Wf, orig_w, orig_h, device)
+                mask = rasterize_polygon_mask(
+                    poly_xy, Hf, Wf,
+                    int(orig_w), int(orig_h),
+                    device,
+                )
                 if mask.sum() < 1.0:
                     continue
                 v_pre = mask_pool_features(F_pre, mask)
                 v_post = mask_pool_features(F_post, mask)
                 feats_diff.append(torch.abs(v_post - v_pre))
                 gt_labels.append(int(y.item()))
-                poly_valid.append(poly_xy)
+                valid_polys.append(poly_xy)
 
             if len(feats_diff) == 0:
                 continue
@@ -161,48 +171,49 @@ def eval_split(
 
             with torch.no_grad():
                 logits = head(X)                     # (#bldg,4)
-                probs = torch.softmax(logits, dim=1) # (#bldg,4)
+                probs = torch.softmax(logits, dim=1)
                 confs, preds = probs.max(dim=1)
 
             y_pred = preds.cpu().numpy().astype(np.int64)
             confs_np = confs.cpu().numpy().astype(float)
 
-            # store metrics arrays
             all_true.append(y_true)
             all_pred.append(y_pred)
-            all_conf.append(confs_np)
-            all_tile_ids.extend([tile_id] * len(y_true))
 
-            # get building UIDs from JSON to include in CSV
+            # --- load UIDs from label JSON to include in CSV ---
             label_json_path = (
                 Path(cfg["DATA_ROOT"]) / split_name / "labels" / f"{tile_id}.json"
             )
-            with label_json_path.open("r") as f_lbl:
-                label_meta = json.load(f_lbl)
+            try:
+                with label_json_path.open("r") as f_lbl:
+                    label_meta = json.load(f_lbl)
+            except FileNotFoundError:
+                # Fallback: just write dummy UIDs
+                uids = ["" for _ in range(len(valid_polys))]
+            else:
+                feats = label_meta["features"]["xy"]
+                # Collect all building UIDs with valid subtype
+                all_uids_raw = []
+                for feat in feats:
+                    props = feat["properties"]
+                    if props.get("feature_type") != "building":
+                        continue
+                    subtype = props.get("subtype", "")
+                    if subtype not in LABEL2IDX:
+                        continue
+                    all_uids_raw.append(props.get("uid", ""))
 
-            feats = label_meta["features"]["xy"]
-            uids = []
-            for feat in feats:
-                props = feat["properties"]
-                if props.get("feature_type") != "building":
-                    continue
-                subtype = props.get("subtype", "")
-                if subtype not in IDX2LABEL.values():
-                    continue
-                uids.append(props.get("uid", ""))
+                # Align to valid_polys count (we dropped some polygons if mask empty)
+                uids = all_uids_raw[: len(valid_polys)]
+                if len(uids) < len(valid_polys):
+                    # pad with empty if mismatch
+                    uids += [""] * (len(valid_polys) - len(uids))
 
-            # align UIDs to valid polys (could mismatch if some polys were dropped)
-            n_keep = len(poly_valid)
-            uids = uids[:n_keep]
-            all_uids.extend(uids)
-
-            # write rows to CSV
-            for uid, ti, t_idx, p_idx, conf in zip(
-                uids, [tile_id] * len(y_true), y_true, y_pred, confs_np
-            ):
+            # write rows
+            for uid, t_idx, p_idx, conf in zip(uids, y_true, y_pred, confs_np):
                 writer.writerow(
                     {
-                        "tile_id": ti,
+                        "tile_id": tile_id,
                         "uid": uid,
                         "true_idx": int(t_idx),
                         "true_label": IDX2LABEL[int(t_idx)],
@@ -212,7 +223,7 @@ def eval_split(
                     }
                 )
 
-    # aggregate metrics
+    # ---------- aggregate metrics ----------
     if not all_true:
         print(f"[Eval:{split_name}] No buildings evaluated.")
         metrics = {}
@@ -223,10 +234,15 @@ def eval_split(
         acc = accuracy_score(y_true_all, y_pred_all)
         macro_f1 = f1_score(y_true_all, y_pred_all, average="macro")
         weighted_f1 = f1_score(y_true_all, y_pred_all, average="weighted")
-        prec, rec, f1_vals, support = precision_recall_fscore_support(
-            y_true_all, y_pred_all, labels=[0, 1, 2, 3], zero_division=0
+        prec, rec, f1, support = precision_recall_fscore_support(
+            y_true_all,
+            y_pred_all,
+            labels=[0, 1, 2, 3],
+            zero_division=0,
         )
-        cm = confusion_matrix(y_true_all, y_pred_all, labels=[0, 1, 2, 3]).tolist()
+        cm = confusion_matrix(
+            y_true_all, y_pred_all, labels=[0, 1, 2, 3]
+        ).tolist()
         report = classification_report(
             y_true_all,
             y_pred_all,
@@ -242,7 +258,7 @@ def eval_split(
                 IDX2LABEL[i]: {
                     "precision": float(prec[i]),
                     "recall": float(rec[i]),
-                    "f1": float(f1_vals[i]),
+                    "f1": float(f1[i]),
                     "support": int(support[i]),
                 }
                 for i in range(4)
@@ -252,13 +268,16 @@ def eval_split(
             "n_buildings": int(y_true_all.size),
         }
 
-        print(f"[Eval:{split_name}] Accuracy: {acc:.4f}, macro-F1: {macro_f1:.4f}, weighted-F1: {weighted_f1:.4f}")
+        print(
+            f"[Eval:{split_name}] Accuracy: {acc:.4f}, "
+            f"macro-F1: {macro_f1:.4f}, weighted-F1: {weighted_f1:.4f}"
+        )
         print(report)
 
-    # save metrics JSON
-    metrics_path = PROJECT_ROOT / "metrics" / f"polygon_siamese_{split_name.lower()}_eval.json"
+    metrics_path = PROJECT_ROOT / "metrics" / f"polygon_siamese_{split_name}_eval.json"
     with metrics_path.open("w") as f:
         json.dump(metrics, f, indent=2)
+
     print(f"[Eval:{split_name}] Saved metrics to {metrics_path}")
     print(f"[Eval:{split_name}] Saved predictions CSV to {csv_path}")
 
@@ -271,7 +290,7 @@ def main():
     device = get_device(prefer_gpu=True)
     print("Device:", device)
 
-    # load model
+    # load model checkpoint
     ckpt_path = Path(cfg["MODEL_PATH"])
     assert ckpt_path.exists(), f"Model checkpoint not found: {ckpt_path}"
     ckpt = torch.load(ckpt_path, map_location=device)
@@ -281,7 +300,7 @@ def main():
     backbone.load_state_dict(ckpt["backbone"])
     head.load_state_dict(ckpt["head"])
 
-    # Evaluate both train and test
+    # Evaluate both train and test splits
     _ = eval_split("train", cfg, backbone, head, device)
     _ = eval_split("test", cfg, backbone, head, device)
 

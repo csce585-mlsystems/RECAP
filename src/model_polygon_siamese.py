@@ -1,76 +1,76 @@
 """
 model_polygon_siamese.py
+
 Purpose:
-  Siamese ResNet-18 backbone for pre/post tiles + MLP head for damage,
-  plus mask-pooling utilities that turn polygons into building embeddings.
+  - Define the siamese tile backbone (ResNet-18) and the per-building damage head.
+  - Provide utilities for rasterizing polygon masks and pooling features.
 """
-from pathlib import Path
-import torch
 
-from .common import PROJECT_ROOT
-from typing import List, Tuple
-import numpy as np
-from PIL import Image, ImageDraw
+from typing import Tuple
 
 import torch
-import torch.nn as nn
+from torch import nn
 import torch.nn.functional as F
 from torchvision import models
 
-WEIGHTS_DIR = PROJECT_ROOT / "weights"
-LOCAL_RESNET18 = WEIGHTS_DIR / "resnet18-f37072fd.pth"
+
 class SiameseTileBackbone(nn.Module):
     """
-    Shared ResNet-18 encoder that returns a high-level feature map for a tile.
-    We remove avgpool+fc to keep spatial features: (B, C, H', W').
+    Shared ResNet-18 encoder used for both pre- and post-disaster tiles.
+
+    Input:
+      x: (3,H,W) or (B,3,H,W) or (1,1,3,H,W) in some buggy cases.
+    Output:
+      feature map: (B,C,H',W')
     """
+
     def __init__(self, imagenet_weights: bool = True):
         super().__init__()
-
-        if imagenet_weights and LOCAL_RESNET18.exists():
-            print(f"[PolygonSiamese] Loaded local ResNet-18 weights from: {LOCAL_RESNET18}")
-            base = models.resnet18(weights=None)  # do not download
-            state = torch.load(LOCAL_RESNET18, map_location="cpu")
-            base.load_state_dict(state)
-        elif imagenet_weights:
-            print("[PolygonSiamese] Using torchvision ResNet-18 weights (will attempt download).")
+        if imagenet_weights:
             base = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
+            print("[PolygonSiamese] Using ResNet-18 with ImageNet pretrained weights.")
         else:
-            print("[PolygonSiamese] Using ResNet-18 with random init (no pretrained weights).")
             base = models.resnet18(weights=None)
+            print("[PolygonSiamese] Using ResNet-18 with random init (no pretrained weights).")
 
-        # keep everything up to layer4 as the encoder
-        self.encoder = nn.Sequential(
-            base.conv1,
-            base.bn1,
-            base.relu,
-            base.maxpool,
-            base.layer1,
-            base.layer2,
-            base.layer3,
-            base.layer4,
-        )
+        # Remove avgpool + fc, keep conv → layer4
+        layers = list(base.children())[:-2]
+        self.encoder = nn.Sequential(*layers)
+        self.out_channels = 512
 
-        # number of channels in the final feature map
-        self.out_channels = base.fc.in_features
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x:  (B, 3, H, W)
-        out:(B, C, H', W')
-        """
+        # Fix shapes like (1,1,3,H,W) → (1,3,H,W)
+        if x.dim() == 5:
+            # Most common case from buggy collate: (1,1,3,H,W)
+            # squeeze first dim → (1,3,H,W)
+            x = x.squeeze(0)
+
+        # If single image (3,H,W), add batch dim
+        if x.dim() == 3:
+            x = x.unsqueeze(0)
+
+        # Now x must be (B,3,H,W)
         return self.encoder(x)
 
 
 class DamageHead(nn.Module):
     """
-    Simple MLP head that maps building-level feature difference to 4 damage classes.
+    Simple MLP that maps per-building feature vectors to 4 damage classes.
+
+    IMPORTANT:
+      - Submodule is called 'net' so keys look like:
+          'net.0.weight', 'net.0.bias', 'net.2.weight', 'net.2.bias'
+      - Architecture matches the checkpoint that was used during training:
+          Linear -> ReLU -> Linear
+        (no Dropout, no extra layers)
     """
-    def __init__(self, in_dim: int = 512, n_classes: int = 4):
+
+    def __init__(self, in_dim: int, n_classes: int = 4):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(in_dim, 256),
-            nn.ReLU(True),
-            nn.Linear(256, n_classes),
+            nn.Linear(in_dim, 256),  # net.0 (has weights/bias)
+            nn.ReLU(inplace=True),   # net.1 (no weights)
+            nn.Linear(256, n_classes),  # net.2 (has weights/bias)
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -78,50 +78,54 @@ class DamageHead(nn.Module):
 
 
 def rasterize_polygon_mask(
-    poly_xy: np.ndarray,
-    feat_h: int,
-    feat_w: int,
+    poly_xy,
+    Hf: int,
+    Wf: int,
     orig_w: int,
     orig_h: int,
     device: torch.device,
 ) -> torch.Tensor:
     """
-    Given polygon in ORIGINAL pixel coords (x,y) and feature map size (feat_w, feat_h),
-    create a float32 mask of shape (feat_h, feat_w) with 1 inside the polygon and 0 outside.
+    Convert a polygon (in original image pixel coords) into a binary mask at feature-map resolution.
+
+    Returns:
+      mask: (Hf,Wf) float tensor in {0,1}
     """
-    # map from original (0..orig_w-1, 0..orig_h-1) to feature map (0..feat_w-1, 0..feat_h-1)
-    sx = feat_w / float(orig_w)
-    sy = feat_h / float(orig_h)
-    xs = poly_xy[:, 0] * sx
-    ys = poly_xy[:, 1] * sy
+    import numpy as np
+    from PIL import Image, ImageDraw
 
-    # clamp to valid range
-    xs = np.clip(xs, 0, feat_w - 1)
-    ys = np.clip(ys, 0, feat_h - 1)
+    # poly_xy is an Nx2 array in original image coords (x,y)
+    poly = poly_xy.astype(float)
+    # scale from original size -> feature map size
+    scale_x = Wf / float(orig_w)
+    scale_y = Hf / float(orig_h)
+    poly_scaled = np.stack(
+        [poly[:, 0] * scale_x, poly[:, 1] * scale_y],
+        axis=1,
+    )
 
-    img = Image.new("L", (feat_w, feat_h), 0)
-    draw = ImageDraw.Draw(img)
-    coords = list(zip(xs.tolist(), ys.tolist()))
-    draw.polygon(coords, outline=1, fill=1)
-    mask_np = np.array(img, dtype=np.float32)  # 0 or 1
-    mask_t = torch.from_numpy(mask_np).to(device)  # (H',W')
-    return mask_t
+    # Draw into a PIL image
+    mask_img = Image.new("L", (Wf, Hf), 0)
+    draw = ImageDraw.Draw(mask_img)
+    draw.polygon(list(map(tuple, poly_scaled)), outline=1, fill=1)
+    mask_np = np.array(mask_img, dtype="float32")
+
+    mask = torch.from_numpy(mask_np).to(device)  # (Hf,Wf)
+    return mask
 
 
 def mask_pool_features(
-    feat: torch.Tensor,  # (C,H',W')
-    mask: torch.Tensor,  # (H',W')
-    eps: float = 1e-6,
+    feat_map: torch.Tensor,  # (C,Hf,Wf)
+    mask: torch.Tensor,      # (Hf,Wf)
 ) -> torch.Tensor:
     """
-    Mean-pool features inside mask.
-    returns: (C,)
+    Average-pool features inside a binary mask.
+
+    Returns:
+      v: (C,) pooled feature vector.
     """
-    # ensure same device
-    C, H, W = feat.shape
-    mask = mask.view(1, H, W)
-    # multiply and sum
-    weighted = feat * mask
-    s = weighted.view(C, -1).sum(dim=1)  # (C,)
-    denom = mask.view(-1).sum() + eps
-    return s / denom
+    C, Hf, Wf = feat_map.shape
+    m = mask.view(1, Hf, Wf)  # (1,Hf,Wf)
+    denom = m.sum() + 1e-6
+    v = (feat_map * m).sum(dim=(1, 2)) / denom
+    return v
