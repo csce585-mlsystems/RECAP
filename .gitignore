@@ -3,4 +3,6 @@
 !/data/.gitkeep
 
 /weights/resnet18-f37072fd.pth
+/weights/fcn_resnet50_coco-1167a1af.pth
 /models/stage1_deeplabv3_resnet50_best.pt
+/models/polygon_siamese_best.pt
