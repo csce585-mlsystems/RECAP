@@ -437,10 +437,10 @@ so tile selection is done with a dropdown, and the map is centered on that tile.
         c1, c2 = st.columns(2)
         with c1:
             st.markdown("**Pre-disaster image**")
-            st.image(str(pre_img_path), use_container_width=True)
+            st.image(str(pre_img_path), use_column_width=True)
         with c2:
             st.markdown("**Post-disaster image**")
-            st.image(str(post_img_path), use_container_width=True)
+            st.image(str(post_img_path), use_column_width=True)
 
     st.markdown("---")
     st.subheader("Model Inference: Ground Truth vs Prediction")
@@ -474,10 +474,10 @@ so tile selection is done with a dropdown, and the map is centered on that tile.
     col_gt, col_pred = st.columns(2)
     with col_gt:
         st.markdown("**Ground-truth damage overlay**")
-        st.image(str(gt_overlay_path), use_container_width=True)
+        st.image(str(gt_overlay_path), use_column_width=True)
     with col_pred:
         st.markdown("**Predicted damage overlay**")
-        st.image(str(pred_overlay_path), use_container_width=True)
+        st.image(str(pred_overlay_path), use_column_width=True)
 
     st.markdown(f"**Tile accuracy:** `{tile_acc:.3f}`")
 
