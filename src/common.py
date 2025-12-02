@@ -5,10 +5,11 @@ Purpose:
   color mapping, simple overlay utilities, and a small logger.
 """
 
-from pathlib import Path
 import random
+from pathlib import Path
+from typing import List
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 import torch
 
@@ -60,36 +61,76 @@ LABEL2COLOR = {
 }
 
 
-def to_numpy_image(t: torch.Tensor) -> np.ndarray:
+def to_numpy_image(t: "torch.Tensor") -> np.ndarray:
     """
-    t: (3,H,W) in [0,1]
-    -> uint8 (H,W,3)
+    Convert a CHW or HWC float tensor in [0,1] to uint8 HxWx3 numpy array.
     """
-    arr = (t.detach().cpu().numpy().transpose(1, 2, 0) * 255.0).clip(0, 255).astype(np.uint8)
+    import torch
+
+    if isinstance(t, torch.Tensor):
+        arr = t.detach().cpu().numpy()
+    else:
+        arr = np.asarray(t)
+
+    # if CHW -> HWC
+    if arr.ndim == 3 and arr.shape[0] in (1, 3):
+        arr = arr.transpose(1, 2, 0)
+    elif arr.ndim != 3:
+        raise ValueError(f"Expected 3D tensor/image, got shape {arr.shape}")
+
+    # if single-channel, repeat to RGB
+    if arr.shape[2] == 1:
+        arr = np.repeat(arr, 3, axis=2)
+
+    arr = (arr * 255.0).clip(0, 255).astype(np.uint8)
     return arr
 
 
 def save_overlay_polygon(
     base_rgb: np.ndarray,
-    polygons_xy,
-    labels,
-    save_path: Path,
-):
+    polys_xy: List[np.ndarray],
+    labels: List[str],
+    out_path: Path,
+) -> None:
     """
-    Draw semi-transparent colored polygons on top of the RGB base image.
-    polygons_xy: list of np.ndarray of shape (N_i,2) in pixel coords (x,y)
-    labels: list of str damage label ("no-damage", etc.)
+    Draw damage polygons on top of a base RGB image and save to disk.
+
+    Args:
+        base_rgb : HxWx3 uint8 numpy array (e.g., from to_numpy_image(post_t))
+        polys_xy : list of (N_i, 2) arrays in pixel coords
+        labels   : list of damage labels ('no-damage', 'minor-damage', etc.)
+        out_path : where to save the PNG
     """
-    H, W, _ = base_rgb.shape
-    base_img = Image.fromarray(base_rgb)
-    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    draw = Image.core.draw(overlay.im)  # faster than ImageDraw.Draw for many polys
+    assert len(polys_xy) == len(labels), "polygons and labels must have same length"
 
-    for poly, lab in zip(polygons_xy, labels):
-        color = LABEL2COLOR.get(lab, (0, 255, 255, 90))
-        # PIL draw expects a flat list of coordinates: [x0,y0,x1,y1,...]
-        coords = [float(x) for xy in poly for x in xy]
-        draw.polygon(coords, fill=color)
+    # ensure uint8 RGB
+    if base_rgb.dtype != np.uint8:
+        base_rgb = base_rgb.astype(np.uint8)
+    if base_rgb.ndim != 3 or base_rgb.shape[2] != 3:
+        raise ValueError(f"Expected base_rgb as HxWx3, got shape {base_rgb.shape}")
 
-    blended = Image.alpha_composite(base_img.convert("RGBA"), overlay)
-    blended.convert("RGB").save(save_path)
+    # base image + transparent overlay
+    base_img = Image.fromarray(base_rgb, mode="RGB")
+    overlay = Image.new("RGBA", base_img.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay, "RGBA")
+
+    # simple color map for the 4 damage classes
+    color_map = {
+        "no-damage": (0, 255, 0, 80),        # green, transparent
+        "minor-damage": (255, 255, 0, 80),   # yellow
+        "major-damage": (255, 165, 0, 80),   # orange
+        "destroyed": (255, 0, 0, 80),        # red
+    }
+
+    for poly, lab in zip(polys_xy, labels):
+        if poly is None or len(poly) == 0:
+            continue
+        coords = [(float(x), float(y)) for x, y in poly]
+        color = color_map.get(lab, (255, 255, 255, 80))  # default: white
+        # filled polygon + white outline for visibility
+        draw.polygon(coords, fill=color, outline=(255, 255, 255, 128))
+
+    # alpha-composite overlay on top of base image
+    out_img = Image.alpha_composite(base_img.convert("RGBA"), overlay)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_img.save(out_path)
