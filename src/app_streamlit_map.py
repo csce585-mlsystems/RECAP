@@ -408,7 +408,7 @@ so tile selection is done with a dropdown, and the map is centered on that tile.
         layers=[pins_layer],
         initial_view_state=view_state,
         tooltip={"text": "{tile_id}\n{disaster}\n{split}"},
-        map_style="mapbox://styles/mapbox/light-v10",
+        #map_style="mapbox://styles/mapbox/light-v10",
     )
 
     st.pydeck_chart(deck)
