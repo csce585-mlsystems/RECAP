@@ -4,11 +4,11 @@
 **Group Information**
 ---------------------
 
-**Aryan Anand** Email: a.aryansurya007@gmail.com
+**Aryan Anand** Email: asanand@email.sc.edu
 
-**Yatin Raju** Email: yatinrcb@gmail.com
+**Yatin Raju** Email: bhupatir@email.sc.edu
 
-**Sri Satishkumar** Email: @gmail.com
+**Sri Satishkumar** Email: satishks@email.sc.edu
 
 **Project Summary / Abstract**
 ------------------------------
