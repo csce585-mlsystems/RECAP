@@ -218,34 +218,41 @@ Plain textANTLR4BashCC#CSSCoffeeScriptCMakeDartDjangoDockerEJSErlangGitGoGraphQL
 **Directory Structure**
 =======================
 
-.
-├── data/                             # Dataset downloaded from HuggingFace
-│    └── xBD/
-│    ├── train/images,labels,target
-│    └── test/images,labels,target
+```
+├── data/                                   # Dataset downloaded from HuggingFace
+│   └── xBD/
+│       ├── train/
+│       │   ├── images/
+│       │   ├── labels/
+│       │   └── target/
+│       └── test/
+│           ├── images/
+│           ├── labels/
+│           └── target/
 │
-├── models/                           # Saved models
-│    └── polygon\_siamese\_best.pt
+├── models/                                 # Saved models
+│   └── polygon_siamese_best.pt
 │
 ├── artifacts/
-│    ├── plots/                          # Evaluation figures
-│    └── demo\_overlays/                 # Sample predicted overlay images
+│   ├── plots/                              # Evaluation figures
+│   └── demo_overlays/                      # Sample predicted overlay images
 │
 ├── src/
-│    ├── train\_building\_seg.py
-│    ├── train\_polygon\_siamese.py
-│    ├── eval\_full\_model.py
-│    ├── model\_polygon\_siamese.py
-│    ├── building\_seg\_model.py
-│    ├── dataset\_tiles.py
-│    ├── app\_streamlit\_map.py
-│    └── common.py
+│   ├── train_building_seg.py
+│   ├── train_polygon_siamese.py
+│   ├── eval_full_model.py
+│   ├── model_polygon_siamese.py
+│   ├── building_seg_model.py
+│   ├── dataset_tiles.py
+│   ├── app_streamlit_map.py
+│   └── common.py
 │
 ├── HuggingFace/
-│   └── get\_xbd.py                     # Partial dataset downloader
+│   └── get_xbd.py                           # Partial dataset downloader
 │
 ├── README.md
 └── requirements.txt
+```
 
 **How to Run**
 ==============
