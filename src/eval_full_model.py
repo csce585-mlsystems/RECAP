@@ -70,16 +70,22 @@ def ensure_dir(path: Path) -> None:
 
 def build_pair_features(v_pre: torch.Tensor, v_post: torch.Tensor) -> torch.Tensor:
     """
-    Build the same 4x feature vector used in training:
+    Build the SAME 4x feature vector used in training:
 
-        [v_pre,
-         v_post,
-         v_post - v_pre,
-         |v_post - v_pre|] -> shape = (4*C,)
+        diff     = v_post - v_pre
+        abs_diff = |diff|
+
+        feat = [v_pre,
+                v_post,
+                abs_diff,
+                diff]     -> shape = (4*C,)
+
+    IMPORTANT: this order MUST match train_polygon_siamese.make_change_features,
+    otherwise the head sees the wrong feature layout.
     """
     diff = v_post - v_pre
-    adiff = torch.abs(diff)
-    return torch.cat([v_pre, v_post, diff, adiff], dim=0)
+    abs_diff = torch.abs(diff)
+    return torch.cat([v_pre, v_post, abs_diff, diff], dim=0)
 
 
 def evaluate(cfg: dict) -> None:

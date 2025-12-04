@@ -69,12 +69,14 @@ CONFIG = {
 }
 
 
-def load_label_polygons_and_labels(label_json_path: Path) -> Tuple[List[np.ndarray], List[int], List[str]]:
+def load_label_polygons_and_labels(
+    label_json_path: Path,
+) -> Tuple[List[np.ndarray], List[int], List[str]]:
     """
     Load polygons + labels + uids from an xBD label JSON.
 
     Returns:
-      polys_xy  : list of np.ndarray (N_i, 2) pixel coords
+      polys_xy  : list of np.ndarray (N_i, 2) pixel coords in ORIGINAL image space
       label_idx : list of int labels {0..3}
       uids      : list of string building IDs
     """
@@ -86,6 +88,8 @@ def load_label_polygons_and_labels(label_json_path: Path) -> Tuple[List[np.ndarr
     uids: List[str] = []
 
     feats = meta["features"]["xy"]
+    from shapely import wkt as shapely_wkt
+
     for feat in feats:
         props = feat["properties"]
         if props.get("feature_type") != "building":
@@ -97,7 +101,6 @@ def load_label_polygons_and_labels(label_json_path: Path) -> Tuple[List[np.ndarr
         lab_idx = LABEL2IDX[subtype]
         uid = props.get("uid", "")
 
-        from shapely import wkt as shapely_wkt
         geom = shapely_wkt.loads(feat["wkt"])
         x, y = geom.exterior.coords.xy
         poly = np.stack([np.array(x), np.array(y)], axis=1)  # (N,2)
@@ -113,17 +116,26 @@ def build_pair_features(v_pre: torch.Tensor, v_post: torch.Tensor) -> torch.Tens
     """
     Build the SAME kind of 4x feature vector used in training:
 
-        [v_pre,
-         v_post,
-         v_post - v_pre,
-         |v_post - v_pre|]   ->  shape = (4*C,)
+        diff     = v_post - v_pre
+        abs_diff = |diff|
 
-    If backbone.out_channels = C=512, then this gives 2048 dims,
-    which matches the checkpoint head weight shape [256, 2048].
+        feat = [v_pre,
+                v_post,
+                abs_diff,
+                diff]   ->  shape = (4*C,)
+
+    This matches train_polygon_siamese.make_change_features.
     """
     diff = v_post - v_pre
-    adiff = torch.abs(diff)
-    return torch.cat([v_pre, v_post, diff, adiff], dim=0)  # (4*C,)
+    abs_diff = torch.abs(diff)
+    return torch.cat([v_pre, v_post, abs_diff, diff], dim=0)  # (4*C,)
+
+
+def _to_float(val) -> float:
+    """Helper to safely convert Tensor/int to float."""
+    if isinstance(val, torch.Tensor):
+        return float(val.item())
+    return float(val)
 
 
 def demo_split(cfg: Dict):
@@ -173,7 +185,7 @@ def demo_split(cfg: Dict):
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
 
     backbone = SiameseTileBackbone(imagenet_weights=False).to(device)
-    # NOTE: head expects in_dim = 4 * backbone.out_channels to match checkpoint (2048)
+    # NOTE: head expects in_dim = 4 * backbone.out_channels to match checkpoint
     head = DamageHead(in_dim=backbone.out_channels * 4, n_classes=4).to(device)
 
     backbone.load_state_dict(ckpt["backbone"])
@@ -184,14 +196,29 @@ def demo_split(cfg: Dict):
     out_dir = Path(cfg["OUT_DIR"])
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    all_true: List[int] = []
-    all_pred: List[int] = []
+    all_true: List[np.ndarray] = []
+    all_pred: List[np.ndarray] = []
 
     print(f"\n[Demo] Running on {len(ds)} random tiles from split '{cfg['SPLIT']}'...\n")
 
-    for pre_t, post_t, polys_xy_ds, labels_t_ds, tile_id, orig_w, orig_h in tqdm(loader, desc="demo"):
+    for (
+        pre_t,
+        post_t,
+        polys_xy_ds,
+        labels_t_ds,
+        tile_id,
+        orig_w,
+        orig_h,
+    ) in tqdm(loader, desc="demo"):
+
+        # Convert orig_w, orig_h to float for scaling
+        ow = _to_float(orig_w)
+        oh = _to_float(orig_h)
+
         # Re-load polygons + labels from the JSON directly (to keep GT order + uids)
-        label_json_path = Path(cfg["DATA_ROOT"]) / cfg["SPLIT"] / "labels" / f"{tile_id}.json"
+        label_json_path = (
+            Path(cfg["DATA_ROOT"]) / cfg["SPLIT"] / "labels" / f"{tile_id}.json"
+        )
         polys_xy, labels_idx, uids = load_label_polygons_and_labels(label_json_path)
 
         if len(polys_xy) == 0:
@@ -202,13 +229,13 @@ def demo_split(cfg: Dict):
         post_t = post_t.to(device)
 
         with torch.no_grad():
-            F_pre = backbone(pre_t)[0]   # (C,H',W')
+            F_pre = backbone(pre_t)[0]  # (C,H',W')
             F_post = backbone(post_t)[0]
         C, Hf, Wf = F_pre.shape
 
         feats_all = []
         gt_labels_filtered: List[int] = []
-        valid_polys: List[np.ndarray] = []
+        valid_polys_orig: List[np.ndarray] = []
 
         # For each building polygon, mask-pool and compute 4x feature vector
         for poly_xy, lab_idx in zip(polys_xy, labels_idx):
@@ -216,18 +243,18 @@ def demo_split(cfg: Dict):
                 poly_xy,
                 Hf,
                 Wf,
-                orig_w,
-                orig_h,
+                ow,
+                oh,
                 device,
             )
             if mask.sum() < 1.0:
                 continue
-            v_pre = mask_pool_features(F_pre, mask)   # (C,)
-            v_post = mask_pool_features(F_post, mask) # (C,)
-            feat = build_pair_features(v_pre, v_post) # (4*C,)
+            v_pre = mask_pool_features(F_pre, mask)  # (C,)
+            v_post = mask_pool_features(F_post, mask)  # (C,)
+            feat = build_pair_features(v_pre, v_post)  # (4*C,)
             feats_all.append(feat)
             gt_labels_filtered.append(int(lab_idx))
-            valid_polys.append(poly_xy)
+            valid_polys_orig.append(poly_xy)
 
         if len(feats_all) == 0:
             print(f"[Demo] No valid masked buildings for tile {tile_id}, skipping.")
@@ -248,21 +275,37 @@ def demo_split(cfg: Dict):
         all_pred.append(y_pred)
 
         # ---- Make overlays ----
-        post_rgb = to_numpy_image(post_t)
+        # post_t is already resized to (RESIZE, RESIZE) from the dataset
+        post_rgb = to_numpy_image(post_t)  # HxWx3, H=W=RESIZE
+
+        H_img, W_img, _ = post_rgb.shape
+        scale_x = W_img / ow
+        scale_y = H_img / oh
+
+        # Scale polygons from original image coords -> resized image coords
+        scaled_polys: List[np.ndarray] = []
+        for poly in valid_polys_orig:
+            poly_scaled = poly.astype(np.float32).copy()
+            poly_scaled[:, 0] *= scale_x
+            poly_scaled[:, 1] *= scale_y
+            scaled_polys.append(poly_scaled)
 
         # predicted overlay
         pred_labels_str = [IDX2LABEL[i] for i in y_pred]
         pred_overlay_path = out_dir / f"{tile_id}_pred.png"
-        save_overlay_polygon(post_rgb, valid_polys, pred_labels_str, pred_overlay_path)
+        save_overlay_polygon(post_rgb, scaled_polys, pred_labels_str, pred_overlay_path)
 
         # ground-truth overlay
         gt_labels_str = [IDX2LABEL[i] for i in y_true]
         gt_overlay_path = out_dir / f"{tile_id}_gt.png"
-        save_overlay_polygon(post_rgb, valid_polys, gt_labels_str, gt_overlay_path)
+        save_overlay_polygon(post_rgb, scaled_polys, gt_labels_str, gt_overlay_path)
 
         # quick per-tile summary
         tile_acc = (y_true == y_pred).mean()
-        print(f"[Demo] Tile {tile_id}: buildings={len(y_true)}, tile accuracy={tile_acc:.3f}")
+        print(
+            f"[Demo] Tile {tile_id}: buildings={len(y_true)}, "
+            f"tile accuracy={tile_acc:.3f}"
+        )
 
     # ---- Global metrics over all demo buildings ----
     if not all_true:
@@ -276,7 +319,10 @@ def demo_split(cfg: Dict):
     macro_f1 = f1_score(y_true_all, y_pred_all, average="macro")
     weighted_f1 = f1_score(y_true_all, y_pred_all, average="weighted")
     prec, rec, f1, support = precision_recall_fscore_support(
-        y_true_all, y_pred_all, labels=[0, 1, 2, 3], zero_division=0
+        y_true_all,
+        y_pred_all,
+        labels=[0, 1, 2, 3],
+        zero_division=0,
     )
     cm = confusion_matrix(y_true_all, y_pred_all, labels=[0, 1, 2, 3])
 

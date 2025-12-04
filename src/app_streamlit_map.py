@@ -174,7 +174,7 @@ def load_model():
 
 
 # ---------------------------------------------------------------------
-# Inference for a single tile (pre/post + label JSON)
+# Inference helpers
 # ---------------------------------------------------------------------
 def load_polygons_and_labels(label_json_path: Path):
     """
@@ -211,6 +211,25 @@ def load_polygons_and_labels(label_json_path: Path):
     return polys_xy, labels_idx, orig_w, orig_h
 
 
+def build_pair_features(v_pre: torch.Tensor, v_post: torch.Tensor) -> torch.Tensor:
+    """
+    Build the SAME 4x feature vector used in training:
+
+        diff     = v_post - v_pre
+        abs_diff = |diff|
+
+        feat = [v_pre,
+                v_post,
+                abs_diff,
+                diff]  -> shape = (4*C,)
+
+    Matches train_polygon_siamese.make_change_features.
+    """
+    diff = v_post - v_pre
+    abs_diff = torch.abs(diff)
+    return torch.cat([v_pre, v_post, abs_diff, diff], dim=0)
+
+
 def run_model_on_tile(
     device,
     backbone: SiameseTileBackbone,
@@ -224,21 +243,21 @@ def run_model_on_tile(
 
     Returns:
         post_rgb (np.uint8 HxWx3),
-        polys_xy (list of np.ndarray),
+        polys_xy (list of np.ndarray in ORIGINAL coords),
         y_true (np.array ints),
         y_pred (np.array ints),
         pred_overlay_path (Path),
         gt_overlay_path (Path),
         tile_acc (float)
     """
-    # --- load polygons and labels ---
+    # --- load polygons and labels (original image coords) ---
     polys_xy, labels_idx, orig_w, orig_h = load_polygons_and_labels(label_json_path)
     if len(polys_xy) == 0:
         return None
 
     y_true = np.array(labels_idx, dtype=np.int64)
 
-    # --- image transforms (match training / demo) ---
+    # --- image transforms (match training) ---
     transform = T.Compose(
         [
             T.Resize((RESIZE, RESIZE)),
@@ -249,17 +268,17 @@ def run_model_on_tile(
     pre_img = Image.open(pre_img_path).convert("RGB")
     post_img = Image.open(post_img_path).convert("RGB")
 
-    pre_t = transform(pre_img).unsqueeze(0).to(device)   # (1,3,H,W)
+    pre_t = transform(pre_img).unsqueeze(0).to(device)  # (1,3,H,W)
     post_t = transform(post_img).unsqueeze(0).to(device)
 
     with torch.no_grad():
-        F_pre = backbone(pre_t)[0]   # (C,Hf,Wf)
+        F_pre = backbone(pre_t)[0]  # (C,Hf,Wf)
         F_post = backbone(post_t)[0]
 
     C, Hf, Wf = F_pre.shape
 
     feats_all = []
-    valid_polys = []
+    valid_polys_orig = []
     gt_labels_filtered = []
 
     # build 4x feature vector for each polygon
@@ -271,12 +290,10 @@ def run_model_on_tile(
         v_pre = mask_pool_features(F_pre, mask)
         v_post = mask_pool_features(F_post, mask)
 
-        diff = v_post - v_pre
-        adiff = torch.abs(diff)
-        feat = torch.cat([v_pre, v_post, diff, adiff], dim=0)  # (4C,)
+        feat = build_pair_features(v_pre, v_post)  # (4C,)
 
         feats_all.append(feat)
-        valid_polys.append(poly_xy)
+        valid_polys_orig.append(poly_xy)
         gt_labels_filtered.append(lab_idx)
 
     if len(feats_all) == 0:
@@ -292,8 +309,23 @@ def run_model_on_tile(
 
     y_pred = preds.cpu().numpy().astype(np.int64)
 
-    # overlays
-    post_rgb = to_numpy_image(transform(post_img))  # resized post image
+    # --- overlays: use the exact tensor used by the model (but drop batch dim) ---
+    # post_t: (1,3,H,W) -> post_t[0]: (3,H,W)
+    post_rgb = to_numpy_image(post_t[0])  # resized post image: (H,W,3)
+
+    H_img, W_img, _ = post_rgb.shape
+    ow = float(orig_w)
+    oh = float(orig_h)
+    scale_x = W_img / ow
+    scale_y = H_img / oh
+
+    # Scale polygons from original image coords -> resized image coords
+    scaled_polys = []
+    for poly in valid_polys_orig:
+        poly_scaled = poly.astype(np.float32).copy()
+        poly_scaled[:, 0] *= scale_x
+        poly_scaled[:, 1] *= scale_y
+        scaled_polys.append(poly_scaled)
 
     tile_id = label_json_path.stem
     pred_labels_str = [IDX2LABEL[int(i)] for i in y_pred]
@@ -302,12 +334,14 @@ def run_model_on_tile(
     pred_overlay_path = ARTIFACT_DIR / f"{tile_id}_pred.png"
     gt_overlay_path = ARTIFACT_DIR / f"{tile_id}_gt.png"
 
-    save_overlay_polygon(post_rgb, valid_polys, pred_labels_str, pred_overlay_path)
-    save_overlay_polygon(post_rgb, valid_polys, gt_labels_str, gt_overlay_path)
+    # Use scaled polygons for overlays (aligned with resized image)
+    save_overlay_polygon(post_rgb, scaled_polys, pred_labels_str, pred_overlay_path)
+    save_overlay_polygon(post_rgb, scaled_polys, gt_labels_str, gt_overlay_path)
 
     tile_acc = float((y_true_f == y_pred).mean())
 
-    return post_rgb, valid_polys, y_true_f, y_pred, pred_overlay_path, gt_overlay_path, tile_acc
+    return post_rgb, valid_polys_orig, y_true_f, y_pred, pred_overlay_path, gt_overlay_path, tile_acc
+
 
 
 # ---------------------------------------------------------------------
@@ -328,9 +362,6 @@ This app:
   - Ground-truth damage overlay
   - Predicted damage overlay
   - Per-tile accuracy and class counts
-
-Note: Streamlit doesn't let us change selection directly by clicking pins,
-so tile selection is done with a dropdown, and the map is centered on that tile.
         """
     )
 
@@ -408,7 +439,7 @@ so tile selection is done with a dropdown, and the map is centered on that tile.
         layers=[pins_layer],
         initial_view_state=view_state,
         tooltip={"text": "{tile_id}\n{disaster}\n{split}"},
-        #map_style="mapbox://styles/mapbox/light-v10",
+        # map_style="mapbox://styles/mapbox/light-v10",
     )
 
     st.pydeck_chart(deck)
