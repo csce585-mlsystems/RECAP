@@ -121,6 +121,103 @@ This project builds on concepts from prior segmentation and change‑detection r
     
 5.  More coming from your academic paper.
     
+**Dependencies**
+================
+
+### **Core Dependencies**
+
+*   Python 3.11+
+    
+*   PyTorch
+    
+*   Torchvision
+    
+*   Numpy
+    
+*   Matplotlib
+    
+*   Pandas
+    
+*   Scikit‑learn
+    
+*   Pillow
+    
+*   tqdm
+    
+*   shapely
+    
+*   huggingface\_hub
+    
+*   hf\_transfer (optional, for faster downloads)
+    
+*   Streamlit (for frontend)
+    
+*   pydeck (for map visualization)
+
+### **Dependencies & Installation**
+
+
+This project uses **uv** as the package manager (recommended by course requirements). All dependencies — including PyTorch, torchvision, numpy, matplotlib, sklearn, and Streamlit — are fully specified in:
+
+*   pyproject.toml
+    
+*   uv.lock
+    
+
+Step 1 — Install uv (if not installed)
+----------------------------------------
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh 
+```
+Or on Windows (PowerShell):
+```bash
+irm https://astral.sh/uv/install.ps1 | iex   
+```
+Step 2 — Sync the environment
+-------------------------------
+
+From the **root of the repo**, run:
+```bash
+uv sync   
+```
+This will:
+
+Create a virtual environment automatically
+
+Install all required Python dependencies exactly as pinned in uv.lock
+
+Ensure reproducible builds across machines
+
+Step 3 — Activate the environment
+-----------------------------------
+
+On macOS/Linux:
+```bash
+source .venv/bin/activate   
+```
+On Windows (PowerShell):
+```bash
+.venv\Scripts\Activate.ps1   
+```
+Step 4 — Verify installation
+------------------------------
+
+Run:
+```bash
+uv run python -c "import torch; import sklearn; print('OK')"   
+```
+You should see:
+```bash
+OK   
+```
+Optional — Install GPU acceleration (if available)
+--------------------------------------------------
+
+If you have CUDA-enabled GPUs:
+```bash
+uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121   `
+```
+_(Not required for CPU training — our repository defaults to CPU unless GPU is detected.)_
 
 **Dataset Download Instructions**
 =================================
@@ -222,42 +319,6 @@ project-root/
 
 Make sure the filenames match **exactly**, otherwise the training/evaluation scripts will not find them.
 
-
-
-
-
-**Dependencies**
-================
-
-### **Core Dependencies**
-
-*   Python 3.11+
-    
-*   PyTorch
-    
-*   Torchvision
-    
-*   Numpy
-    
-*   Matplotlib
-    
-*   Pandas
-    
-*   Scikit‑learn
-    
-*   Pillow
-    
-*   tqdm
-    
-*   shapely
-    
-*   huggingface\_hub
-    
-*   hf\_transfer (optional, for faster downloads)
-    
-*   Streamlit (for frontend)
-    
-*   pydeck (for map visualization)
 
 **How to Run**
 ==============
