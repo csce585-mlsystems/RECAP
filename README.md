@@ -9,11 +9,14 @@
 
 *   **Aryan Anand**
     
-    *   GitHub: a.aryansurya007
+    *   Email: a.aryansurya007@gmail.com
         
 *   **Yatin Raju**
     
-    *   GitHub: yatinrcb
+    *   Email: yatinrcb@gmail.com
+*   **Sri Satishkumar**
+    
+    *   Email: @gmail.com
         
 
 **Project Summary / Abstract**
@@ -215,7 +218,34 @@ Plain textANTLR4BashCC#CSSCoffeeScriptCMakeDartDjangoDockerEJSErlangGitGoGraphQL
 **Directory Structure**
 =======================
 
-Plain textANTLR4BashCC#CSSCoffeeScriptCMakeDartDjangoDockerEJSErlangGitGoGraphQLGroovyHTMLJavaJavaScriptJSONJSXKotlinLaTeXLessLuaMakefileMarkdownMATLABMarkupObjective-CPerlPHPPowerShell.propertiesProtocol BuffersPythonRRubySass (Sass)Sass (Scss)SchemeSQLShellSwiftSVGTSXTypeScriptWebAssemblyYAMLXML`   RECAP/  │  ├── data/                      # xBD dataset  │   └── xBD Dataset/  │  ├── src/  │   ├── common.py  │   ├── dataset_tiles.py  │   ├── model_polygon_siamese.py  │   ├── model_building_seg.py  │   ├── train_polygon_siamese.py  │   ├── train_building_seg.py  │   ├── eval_full_model.py  │   ├── demo_random_tiles.py  │   ├── select_best_tiles.py  │   └── app_streamlit_map.py  │  ├── models/  │   ├── building_seg_best.pt  │   └── polygon_siamese_best.pt  │  ├── artifacts/  │   ├── demo_overlays/  │   └── plots/  │  ├── run.py  └── result.py   `
+.
+├── data/                             # Dataset downloaded from HuggingFace
+│    └── xBD/
+│    ├── train/images,labels,target
+│    └── test/images,labels,target
+│
+├── models/                           # Saved models
+│    └── polygon\_siamese\_best.pt
+│
+├── artifacts/
+│    ├── plots/                          # Evaluation figures
+│    └── demo\_overlays/                 # Sample predicted overlay images
+│
+├── src/
+│    ├── train\_building\_seg.py
+│    ├── train\_polygon\_siamese.py
+│    ├── eval\_full\_model.py
+│    ├── model\_polygon\_siamese.py
+│    ├── building\_seg\_model.py
+│    ├── dataset\_tiles.py
+│    ├── app\_streamlit\_map.py
+│    └── common.py
+│
+├── HuggingFace/
+│   └── get\_xbd.py                     # Partial dataset downloader
+│
+├── README.md
+└── requirements.txt
 
 **How to Run**
 ==============
