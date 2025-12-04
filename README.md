@@ -1,73 +1,250 @@
-# Project Title  
-## RECAP: Rapid Event-level Classification of Affected Properties
+**Project Title**
+=================
 
-## Group Info  
-- Aryan Anand  
-  - Email: asanand@email.sc.edu  
-- Sri Satishkumar  
-  - Email: satishks@email.sc.edu 
-- Yatin Raju  
-  - Email: bhupatir@email.sc.edu  
+**RECAP: Automated Building Damage Detection Using Pre/Post‑Disaster Satellite Imagery**
+----------------------------------------------------------------------------------------
 
-## Project Summary/Abstract  
-RECAP is an end-to-end prototype that converts paired pre- and post-disaster satellite images into building-level damage labels with calibrated confidence. The model is trained on the public xView2/xBD dataset and outputs four categories: no damage, minor, major, destroyed. Results are presented on a simple Streamlit map for quick situational awareness. For class demos, predictions will be precomputed for one or two events so the app runs smoothly on a standard laptop.
+**Group Info**
+--------------
 
-## Problem Description  
-- **Problem description (2–3 sentences):** After disasters, responders need a quick, trustworthy view of which buildings are safe, damaged, or destroyed. Field surveys are slow and risky, and raw satellite imagery is not directly actionable. We aim to automatically convert paired pre/post imagery into building-level assessments with usable confidence.  
-- **Motivation**  
-  - Faster triage: focus inspections where damage is most likely  
-  - Smarter resource use: guide shelters, supplies, and aid  
-  - Accessible tool: a clear map that non-experts can use  
-- **Challenges**  
-  - Class imbalance and label noise (minor vs major)  
-  - Preventing leakage with event-level train/test splits  
-  - Calibrating confidence for predictable threshold behavior  
+*   **Aryan Anand**
+    
+    *   GitHub: a.aryansurya007
+        
+*   **Yatin Raju**
+    
+    *   GitHub: yatinrcb
+        
 
+**Project Summary / Abstract**
+------------------------------
 
-## Contribution  
-- [`Replication of existing work`]
-- [`Extension of existing work`]
+Natural disasters cause extensive structural damage that must be assessed quickly to guide emergency response. Satellite imagery provides large‑scale coverage, but manually analyzing thousands of buildings is slow and error‑prone.
 
-**Summary:** We will reproduce a standard Siamese CNN baseline on xView2/xBD, then extend it with probability calibration and a lightweight map UI.  
-- Contribution 1: Event-split training and evaluation with a Siamese ResNet-18 baseline (image-only)  
-- Contribution 2: Post-hoc calibration and an interactive Streamlit map with precomputed predictions  
+In this project, we develop **RECAP — a two‑stage deep learning pipeline** that automatically detects buildings and classifies their damage severity using _pre‑ and post‑disaster_ satellite imagery. Our model integrates:
 
-## References  
-### BibTeX of all references used in the project (will also be included as `references.bib`)
+1.  **FCN‑ResNet50 building segmentation**
+    
+2.  **Polygon‑aware Siamese damage classifier (ResNet‑34 backbone)**
+    
 
-@inproceedings{gupta2019xbd,  
-  title = {Creating xBD: A Dataset for Assessing Building Damage from Satellite Imagery},  
-  author = {Gupta, Rohit and Goodman, Benjamin and Patel, Nilesh and others},  
-  booktitle = {CVPR Workshops},  
-  year = {2019}  
-}
+We evaluate RECAP on the **xBD disaster damage dataset** and generate research‑quality visualizations: confusion matrix, per‑class F1 plot, ROC curves, PR curves, calibration curve, and class support. Additionally, we build an **interactive Streamlit demo** that displays all disaster locations on a world map and allows users to visualize pre/post-image pairs and predicted damage overlays.
 
-@inproceedings{daudt2018siamese,  
-  title = {Fully Convolutional Siamese Networks for Change Detection},  
-  author = {Daudt, Rodrigo Caye and Le Saux, Bertrand and Boulch, Alexandre},  
-  booktitle = {IEEE ICIP},  
-  year = {2018}  
-}
+This system demonstrates a scalable, automated approach for rapid post‑disaster assessment.
 
-@inproceedings{alam2018crisismmd,  
-  title = {CrisisMMD: Multimodal Twitter Datasets from Natural Disasters},  
-  author = {Alam, Firoj and Ofli, Ferda and Imran, Muhammad},  
-  booktitle = {AAAI ICWSM},  
-  year = {2018}  
-}
+**Problem Description**
+-----------------------
 
----
+### **Problem**
 
-# < The following is only applicable for the final project submission >  
+After disasters such as hurricanes, earthquakes, floods, and fires, governments must rapidly determine:
 
-## Dependencies  
-None
+*   Where buildings are located
+    
+*   How severely each building is damaged
+    
+*   How damage is distributed across regions
+    
 
-## Directory Structure  
-None
+Manual inspection is slow and expensive. Fully automatic systems must:
 
-## How to Run  
-None
+1.  Detect buildings in remote-sensing imagery
+    
+2.  Compare pre- and post-disaster images
+    
+3.  Identify damage types accurately (no-damage → destroyed)
+    
 
-## Demo  
-None
+### **Motivation**
+
+*   Improve **speed** and **accuracy** of damage assessment
+    
+*   Support emergency agencies with **data-driven maps**
+    
+*   Demonstrate a **full ML pipeline** (training → evaluation → visualization → interactive UI)
+    
+*   Apply modern vision techniques to real-world humanitarian use cases
+    
+
+### **Challenges**
+
+*   Highly imbalanced dataset (majority “no-damage”)
+    
+*   Wide variation in disasters, lighting, and image quality
+    
+*   Need to track **individual buildings** consistently across time
+    
+*   Processing thousands of polygons per tile efficiently
+    
+
+**Contribution**
+----------------
+
+### \[Novel System\] \[Extension of Existing Work\]
+
+Our contributions include:
+
+### **1\. Two‑Stage Deep Learning Pipeline**
+
+*   **BuildingSegModel**
+    
+    *   FCN‑ResNet50 (offline weights)
+        
+    *   Predicts building masks for each tile
+        
+*   **PolygonSiamese Model**
+    
+    *   Siamese ResNet‑34
+        
+    *   Performs polygon mask pooling
+        
+    *   Classifies damage into four categories
+        
+
+### **2\. Polygon‑Aware Feature Engineering**
+
+We compute:
+
+\[vpre,vpost,vpost−vpre,∣vpost−vpre∣\]\[_v_pre​,_v_post​,_v_post​−_v_pre​,∣_v_post​−_v_pre​∣\]
+
+This 4× feature concatenation gives strong temporal change representation.
+
+### **3\. Full Evaluation Framework**
+
+We implemented:
+
+*   Confusion Matrix
+    
+*   Per-Class F1
+    
+*   ROC Curves
+    
+*   Precision‑Recall Curves
+    
+*   Calibration Curve
+    
+*   Class Support Distribution
+    
+*   CSV summary of all metrics
+    
+
+### **4\. Interactive Streamlit Front-End**
+
+*   Load all xBD disaster coordinates
+    
+*   Place clickable pins on a global map
+    
+*   Show pre-image, post-image, predicted overlays, and ground truth
+    
+*   Supports selection of “20 best images” for demo
+    
+
+### **5\. Reproducible Pipeline & Scripts**
+
+*   train\_polygon\_siamese.py
+    
+*   train\_building\_seg.py
+    
+*   eval\_full\_model.py
+    
+*   select\_best\_tiles.py
+    
+*   app\_streamlit\_map.py
+    
+
+**References**
+--------------
+
+(You can replace these with your actual citations.)
+
+1.  Gupta, R., et al. **xBD: A Dataset for Assessing Building Damage from Satellite Imagery.**
+    
+2.  He, K., et al. **ResNet: Deep Residual Learning for Image Recognition.**
+    
+3.  Long, J., et al. **Fully Convolutional Networks for Semantic Segmentation.**
+    
+4.  Zhan, Y., et al. **Damage Assessment from Pre/Post-Disaster Imagery Using CNNs.**
+    
+
+**Reproducing Code for Milestone P1**
+=====================================
+
+1.  Install dependencies using pip or uv
+    
+2.  data/xBD Dataset/
+    
+3.  python3 -m src.train\_building\_seg
+    
+4.  python3 -m src.train\_polygon\_siamese
+    
+5.  python3 -m src.demo\_random\_tiles
+    
+6.  python3 -m src.eval\_full\_model
+    
+
+**Dependencies**
+================
+
+### Python Libraries
+
+*   Python 3.10+
+    
+*   PyTorch
+    
+*   Torchvision
+    
+*   Numpy
+    
+*   Matplotlib
+    
+*   Scikit‑Learn
+    
+*   Pillow
+    
+*   Shapely
+    
+*   Streamlit
+    
+*   PyDeck
+    
+
+Ensure your repo includes:
+
+Plain textANTLR4BashCC#CSSCoffeeScriptCMakeDartDjangoDockerEJSErlangGitGoGraphQLGroovyHTMLJavaJavaScriptJSONJSXKotlinLaTeXLessLuaMakefileMarkdownMATLABMarkupObjective-CPerlPHPPowerShell.propertiesProtocol BuffersPythonRRubySass (Sass)Sass (Scss)SchemeSQLShellSwiftSVGTSXTypeScriptWebAssemblyYAMLXML`pyproject.toml    uv.lock`  
+
+**Directory Structure**
+=======================
+
+Plain textANTLR4BashCC#CSSCoffeeScriptCMakeDartDjangoDockerEJSErlangGitGoGraphQLGroovyHTMLJavaJavaScriptJSONJSXKotlinLaTeXLessLuaMakefileMarkdownMATLABMarkupObjective-CPerlPHPPowerShell.propertiesProtocol BuffersPythonRRubySass (Sass)Sass (Scss)SchemeSQLShellSwiftSVGTSXTypeScriptWebAssemblyYAMLXML`   RECAP/  │  ├── data/                      # xBD dataset  │   └── xBD Dataset/  │  ├── src/  │   ├── common.py  │   ├── dataset_tiles.py  │   ├── model_polygon_siamese.py  │   ├── model_building_seg.py  │   ├── train_polygon_siamese.py  │   ├── train_building_seg.py  │   ├── eval_full_model.py  │   ├── demo_random_tiles.py  │   ├── select_best_tiles.py  │   └── app_streamlit_map.py  │  ├── models/  │   ├── building_seg_best.pt  │   └── polygon_siamese_best.pt  │  ├── artifacts/  │   ├── demo_overlays/  │   └── plots/  │  ├── run.py  └── result.py   `
+
+**How to Run**
+==============
+
+### **1\. Train the models**
+
+Plain textANTLR4BashCC#CSSCoffeeScriptCMakeDartDjangoDockerEJSErlangGitGoGraphQLGroovyHTMLJavaJavaScriptJSONJSXKotlinLaTeXLessLuaMakefileMarkdownMATLABMarkupObjective-CPerlPHPPowerShell.propertiesProtocol BuffersPythonRRubySass (Sass)Sass (Scss)SchemeSQLShellSwiftSVGTSXTypeScriptWebAssemblyYAMLXML`   python3 -m src.train_building_seg  python3 -m src.train_polygon_siamese   `
+
+### **2\. Evaluate**
+
+Plain textANTLR4BashCC#CSSCoffeeScriptCMakeDartDjangoDockerEJSErlangGitGoGraphQLGroovyHTMLJavaJavaScriptJSONJSXKotlinLaTeXLessLuaMakefileMarkdownMATLABMarkupObjective-CPerlPHPPowerShell.propertiesProtocol BuffersPythonRRubySass (Sass)Sass (Scss)SchemeSQLShellSwiftSVGTSXTypeScriptWebAssemblyYAMLXML`   python3 -m src.eval_full_model   `
+
+### **3\. Generate best demo tiles**
+
+Plain textANTLR4BashCC#CSSCoffeeScriptCMakeDartDjangoDockerEJSErlangGitGoGraphQLGroovyHTMLJavaJavaScriptJSONJSXKotlinLaTeXLessLuaMakefileMarkdownMATLABMarkupObjective-CPerlPHPPowerShell.propertiesProtocol BuffersPythonRRubySass (Sass)Sass (Scss)SchemeSQLShellSwiftSVGTSXTypeScriptWebAssemblyYAMLXML`   python3 -m src.select_best_tiles   `
+
+### **4\. Launch Streamlit UI**
+
+Plain textANTLR4BashCC#CSSCoffeeScriptCMakeDartDjangoDockerEJSErlangGitGoGraphQLGroovyHTMLJavaJavaScriptJSONJSXKotlinLaTeXLessLuaMakefileMarkdownMATLABMarkupObjective-CPerlPHPPowerShell.propertiesProtocol BuffersPythonRRubySass (Sass)Sass (Scss)SchemeSQLShellSwiftSVGTSXTypeScriptWebAssemblyYAMLXML`   streamlit run src/app_streamlit_map.py   `
+
+**Demo**
+========
+
+Your project must include:
+
+*   **Video walkthrough of the front-end**
+    
+*   **Slides (10 slide deck)**
+    
+*   **Live map demo (Streamlit)**
+    
+*   **Predicted overlays + ground truth**
