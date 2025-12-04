@@ -286,26 +286,10 @@ python3 src/eval_full_model.py
 python3 -m src.demo_random_tiles   
 ```
 
-### **6\. Select Top‑20 Best Predictions**
-```bash
-python3 -m src.select_best_tiles   
-```
-
-### **7\. Launch the Streamlit App**
+### **6\. Launch the Streamlit App**
 ```bash
 streamlit run src/app_streamlit_map.py   
 ```
-
-This will display:
-
-*   A world map of all tiles
-    
-*   Pre/post images
-    
-*   Damage overlays
-    
-*   Best‑20 curated examples
-    
 
 **Demo Video**
 ===================
