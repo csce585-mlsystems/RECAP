@@ -210,14 +210,6 @@ You should see:
 ```bash
 OK   
 ```
-Optional — Install GPU acceleration (if available)
---------------------------------------------------
-
-If you have CUDA-enabled GPUs:
-```bash
-uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121   `
-```
-_(Not required for CPU training — our repository defaults to CPU unless GPU is detected.)_
 
 **Dataset Download Instructions**
 =================================
