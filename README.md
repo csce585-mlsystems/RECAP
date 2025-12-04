@@ -189,6 +189,43 @@ Each image tile includes _pre‑_ and _post‑disaster_ PNGs with matching l
 └── requirements.txt
 ```
 
+
+**Download Required Large Files (Google Drive)**
+================
+
+Some essential model weight files are **not stored in this repository** because of GitHub’s file-size limits.Before running the project, please download the three required files from Google Drive:
+
+👉 **Google Drive link:https://drive.google.com/drive/folders/1Q8N0FYI1Gcs70K2qR7lmEiIpMUw2Uscc?usp=sharing** 
+
+### **Files you must download**
+
+`polygon_siamese_best.pt                  Final damage-classifier model weights                 models/`
+
+`building_seg_best.pt                     Final building-segmentation model weights             models/`
+
+`fcn_resnet50_coco-1167a1af.pth           Pretrained FCN‑ResNet50 weights for segmentation      weights/`
+
+### **After downloading**
+
+Place the files in the following paths inside your repo:
+
+```
+project-root/
+│
+├── models/
+│     ├── polygon_siamese_best.pt
+│     └── building_seg_best.pt
+│
+└── weights/
+      └── fcn_resnet50_coco-1167a1af.pth
+```
+
+Make sure the filenames match **exactly**, otherwise the training/evaluation scripts will not find them.
+
+
+
+
+
 **Dependencies**
 ================
 
