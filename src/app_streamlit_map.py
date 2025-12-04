@@ -58,9 +58,9 @@ ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
 RESIZE = 512  # must match training / demo
 
 
-# ---------------------------------------------------------------------
+
 # Utilities to index tiles and locations from xBD labels
-# ---------------------------------------------------------------------
+
 def compute_tile_center_from_label(label_json_path: Path) -> Tuple[float, float] | None:
     """
     Given a label JSON with features["lng_lat"], compute an approximate
@@ -154,9 +154,9 @@ def build_tile_index() -> pd.DataFrame:
     return df
 
 
-# ---------------------------------------------------------------------
+
 # Model loading (cached in Streamlit session)
-# ---------------------------------------------------------------------
+ 
 @st.cache_resource
 def load_model():
     device = get_device(prefer_gpu=True)
@@ -173,9 +173,9 @@ def load_model():
     return device, backbone, head
 
 
-# ---------------------------------------------------------------------
+
 # Inference helpers
-# ---------------------------------------------------------------------
+
 def load_polygons_and_labels(label_json_path: Path):
     """
     Load polygons in pixel coordinates + labels (as ints) from xBD label JSON.
@@ -344,9 +344,9 @@ def run_model_on_tile(
 
 
 
-# ---------------------------------------------------------------------
+
 # Streamlit App
-# ---------------------------------------------------------------------
+
 def main():
     st.set_page_config(page_title="xBD Damage Map Demo", layout="wide")
 
@@ -444,9 +444,9 @@ This app:
 
     st.pydeck_chart(deck)
 
-    # -------------------------------------------------
+
     # Show images + run model for selected tile
-    # -------------------------------------------------
+    
     st.subheader("Selected Tile Details")
 
     col_info, col_imgs = st.columns([1, 3])
