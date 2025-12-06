@@ -68,9 +68,9 @@ CONFIG: Dict = {
 }
 
 
-# -------------------------------------------------------
+
 # Dataset + sampler helpers
-# -------------------------------------------------------
+
 def build_train_dataset(cfg: Dict) -> BuildingChangeDataset:
     ds = BuildingChangeDataset(
         root=cfg["DATA_ROOT"],
@@ -121,9 +121,9 @@ def build_sampler(
     return sampler, class_counts, class_weights
 
 
-# -------------------------------------------------------
+
 # Feature construction
-# -------------------------------------------------------
+
 def make_change_features(
     v_pre: torch.Tensor,   # (C,)
     v_post: torch.Tensor,  # (C,)
@@ -140,9 +140,8 @@ def make_change_features(
     return feat
 
 
-# -------------------------------------------------------
 # Collate function for per-building dataset
-# -------------------------------------------------------
+
 def building_collate(batch):
     """
     Custom collate for BuildingChangeDataset.
@@ -172,9 +171,9 @@ def building_collate(batch):
     return pre_batch, post_batch, polys_batch, labels_batch, tile_ids, orig_w_batch, orig_h_batch
 
 
-# -------------------------------------------------------
+
 # Training / validation loops
-# -------------------------------------------------------
+
 def train_one_epoch(
     backbone: nn.Module,
     head: nn.Module,
@@ -376,9 +375,9 @@ def eval_one_epoch(
     return {"macro_f1": macro_f1, "report": report}
 
 
-# -------------------------------------------------------
+
 # Main
-# -------------------------------------------------------
+
 def main():
     cfg = CONFIG
     set_seed(cfg["SEED"])

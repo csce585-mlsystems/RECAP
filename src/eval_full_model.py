@@ -190,9 +190,9 @@ def evaluate(cfg: dict) -> None:
     y_pred = np.concatenate(all_pred, axis=0)
     y_probs = np.concatenate(all_probs, axis=0)  # shape (N, 4)
 
-    # ===========================
+
     # METRIC SUMMARY (PRINT)
-    # ===========================
+
     acc = accuracy_score(y_true, y_pred)
     macro_f1 = f1_score(y_true, y_pred, average="macro")
     weighted_f1 = f1_score(y_true, y_pred, average="weighted")
@@ -214,9 +214,8 @@ def evaluate(cfg: dict) -> None:
     out_dir = Path(cfg["OUT_DIR"])
     ensure_dir(out_dir)
 
-    # ===========================
     # CONFUSION MATRIX
-    # ===========================
+
     cm = confusion_matrix(y_true, y_pred, labels=[0, 1, 2, 3])
 
     plt.figure(figsize=(8, 6))
@@ -235,9 +234,9 @@ def evaluate(cfg: dict) -> None:
     plt.savefig(out_dir / "confusion_matrix.png")
     plt.close()
 
-    # ===========================
+
     # PER-CLASS F1 BAR PLOT
-    # ===========================
+
     per_class_f1 = f1_score(y_true, y_pred, average=None, labels=[0, 1, 2, 3])
     plt.figure(figsize=(8, 5))
     plt.bar(tick_labels, per_class_f1)
@@ -248,9 +247,9 @@ def evaluate(cfg: dict) -> None:
     plt.savefig(out_dir / "per_class_f1_bar.png")
     plt.close()
 
-    # ===========================
+
     # CLASS SUPPORT PLOT
-    # ===========================
+  
     unique, counts = np.unique(y_true, return_counts=True)
     labels_txt = [IDX2LABEL[u] for u in unique]
 
@@ -262,9 +261,9 @@ def evaluate(cfg: dict) -> None:
     plt.savefig(out_dir / "class_support.png")
     plt.close()
 
-    # ===========================
+
     # ROC CURVES (ONE-VS-REST)
-    # ===========================
+
     plt.figure(figsize=(8, 6))
     for i in range(4):
         y_bin = (y_true == i).astype(int)
@@ -300,9 +299,9 @@ def evaluate(cfg: dict) -> None:
     plt.savefig(out_dir / "pr_curves.png")
     plt.close()
 
-    # ===========================
+
     # CALIBRATION CURVE
-    # ===========================
+   
     plt.figure(figsize=(8, 6))
     for i in range(4):
         y_bin = (y_true == i).astype(int)
@@ -319,9 +318,9 @@ def evaluate(cfg: dict) -> None:
     plt.savefig(out_dir / "calibration_curve.png")
     plt.close()
 
-    # ===========================
+    
     # SAVE METRICS CSV
-    # ===========================
+  
     df = pd.DataFrame(
         {
             "metric": ["accuracy", "macro_f1", "weighted_f1"],
