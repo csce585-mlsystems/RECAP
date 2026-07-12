@@ -21,17 +21,18 @@ from typing import List, Dict, Tuple
 # ===================== CONFIG =====================
 HF_REPO_ID       = "aryananand/xBD"
 REVISION         = "v1"        # change to v2 later
-DEST             = Path(__file__).resolve().parents[1] / "data" / "xBD"
+DEST             = Path(__file__).resolve().parents[1] / "data" / "xBD Dataset"
 
 SPLITS           = ["train", "test"]
-FOLDERS          = ["images", "labels", "target"]
-EXTS             = [".png"]    # add others if needed (e.g., ".json", ".tif")
+FOLDERS          = ["images", "labels", "targets"]
+EXTS             = [".png", ".json"]    # images are .png, labels are .json
 
 MAX_PER_FOLDER   = 2000        # set None to get ALL; lower if you want smaller pulls
-BATCH_SIZE       = 500         # how many files per snapshot_download call
-MAX_WORKERS      = 8           # concurrency per call (balance speed vs 429)
-MAX_ATTEMPTS     = 5           # retries per batch
-BASE_SLEEP       = 3           # seconds (exponential backoff)
+BATCH_SIZE       = 200         # how many files per snapshot_download call
+MAX_WORKERS      = 4           # concurrency per call (balance speed vs 429)
+MAX_ATTEMPTS     = 8           # retries per batch
+BASE_SLEEP       = 5           # seconds (exponential backoff)
+BATCH_PAUSE      = 2           # seconds to wait between batches (anonymous rate-limit courtesy)
 # ==================================================
 
 MIN_PY = (3, 8)
@@ -92,8 +93,22 @@ def group_and_cap(files: List[str]) -> Dict[Tuple[str, str], List[str]]:
 def is_transient(err: Exception) -> bool:
     msg = str(err).lower()
     code = getattr(getattr(err, "response", None), "status_code", None)
-    transient = any(x in msg for x in ["429", "500", "502", "503", "504", "too many requests",
-                                       "gateway time-out", "service unavailable"])
+    transient = any(x in msg for x in [
+        "429", "500", "502", "503", "504", "too many requests",
+        "gateway time-out", "service unavailable",
+        # huggingface_hub wraps a repeated 429 on HEAD calls into this generic
+        # error, which doesn't mention "429" itself -- treat it as transient too.
+        "cannot find the requested files in the local cache",
+        "check your connection and try again",
+    ])
+    # Walk the exception chain: huggingface_hub often re-raises through
+    # LocalEntryNotFoundError, losing the original status code on the way.
+    cause = err.__cause__
+    while cause is not None:
+        cause_code = getattr(getattr(cause, "response", None), "status_code", None)
+        if cause_code in {429, 500, 502, 503, 504} or "429" in str(cause).lower():
+            return True
+        cause = cause.__cause__
     return transient or (code in {429, 500, 502, 503, 504})
 
 def download_batch(paths: List[str], attempt: int) -> None:
@@ -142,6 +157,7 @@ def main():
             print(f"  [batch] {i//BATCH_SIZE + 1}/{math.ceil(len(paths)/BATCH_SIZE)} "
                   f"({len(batch)} files, workers={MAX_WORKERS})")
             download_batch(batch, attempt=1)
+            time.sleep(BATCH_PAUSE)
             done += len(batch)
             print(f"  [prog] {done}/{total_to_get} files fetched")
 
@@ -149,8 +165,8 @@ def main():
 
     # Ensure expected dirs exist (handy if you capped and a folder is empty locally)
     for p in [
-        "train/images", "train/labels", "train/target",
-        "test/images",  "test/labels",  "test/target",
+        "train/images", "train/labels", "train/targets",
+        "test/images",  "test/labels",  "test/targets",
     ]:
         (DEST / p).mkdir(parents=True, exist_ok=True)
 
