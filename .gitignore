@@ -1,3 +1,8 @@
+# --- Python / OS cruft ---
+__pycache__/
+*.pyc
+.DS_Store
+
 # --- DATA: keep structure, ignore contents ---
 /data/
 !/data/.gitkeep
