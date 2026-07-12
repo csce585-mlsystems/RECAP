@@ -47,6 +47,7 @@ from .common import (
     LABEL2IDX,
     save_overlay_polygon,
     to_numpy_image,
+    normalize_for_backbone,
 )
 from .dataset_tiles import TileBuildingDataset
 from .model_polygon_siamese import (
@@ -229,8 +230,8 @@ def demo_split(cfg: Dict):
         post_t = post_t.to(device)
 
         with torch.no_grad():
-            F_pre = backbone(pre_t)[0]  # (C,H',W')
-            F_post = backbone(post_t)[0]
+            F_pre = backbone(normalize_for_backbone(pre_t))[0]  # (C,H',W')
+            F_post = backbone(normalize_for_backbone(post_t))[0]
         C, Hf, Wf = F_pre.shape
 
         feats_all = []

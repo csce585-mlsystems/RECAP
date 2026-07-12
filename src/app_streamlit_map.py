@@ -39,6 +39,7 @@ from common import (
     LABEL2IDX,
     to_numpy_image,
     save_overlay_polygon,
+    normalize_for_backbone,
 )
 from model_polygon_siamese import (
     SiameseTileBackbone,
@@ -272,8 +273,8 @@ def run_model_on_tile(
     post_t = transform(post_img).unsqueeze(0).to(device)
 
     with torch.no_grad():
-        F_pre = backbone(pre_t)[0]  # (C,Hf,Wf)
-        F_post = backbone(post_t)[0]
+        F_pre = backbone(normalize_for_backbone(pre_t))[0]  # (C,Hf,Wf)
+        F_post = backbone(normalize_for_backbone(post_t))[0]
 
     C, Hf, Wf = F_pre.shape
 

@@ -13,7 +13,8 @@ Purpose:
 """
 
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List, Optional
+import datetime
 
 import numpy as np
 from tqdm import tqdm
@@ -23,8 +24,9 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.utils.data import DataLoader, WeightedRandomSampler
+from torch.utils.tensorboard import SummaryWriter
 
-from .common import PROJECT_ROOT, get_device, set_seed, IDX2LABEL
+from .common import PROJECT_ROOT, get_device, set_seed, IDX2LABEL, split_events_train_val
 from .dataset_tiles import BuildingChangeDataset
 from .model_polygon_siamese import (
     SiameseTileBackbone,
@@ -39,6 +41,7 @@ CONFIG: Dict = {
     "DATA_ROOT": str(PROJECT_ROOT / "data" / "xBD Dataset"),
     "TRAIN_SPLIT": "train",
     "RESIZE": 512,
+    "VAL_FRAC": 0.2,   # held-out disaster EVENTS, not random tiles/buildings
 
     # base training hyperparams
     "EPOCHS": 30,
@@ -65,19 +68,23 @@ CONFIG: Dict = {
     # misc
     "SEED": 42,
     "SAVE_BEST_PATH": str(PROJECT_ROOT / "models" / "polygon_siamese_best.pt"),
+    "LOG_DIR": str(PROJECT_ROOT / "runs"),
 }
 
 
 
 # Dataset + sampler helpers
 
-def build_train_dataset(cfg: Dict) -> BuildingChangeDataset:
+def build_train_dataset(
+    cfg: Dict, tile_ids: Optional[List[str]] = None
+) -> BuildingChangeDataset:
     ds = BuildingChangeDataset(
         root=cfg["DATA_ROOT"],
         split=cfg["TRAIN_SPLIT"],
         resize=cfg["RESIZE"],
         limit_tiles=None,          # all tiles by default
         use_augmentation=True,
+        tile_ids=tile_ids,
     )
     return ds
 
@@ -399,8 +406,17 @@ def main():
     print(f"Samples per epoch: {samples_per_epoch}")
     print(f"Num workers: {num_workers}")
 
+    # Event-level split: whole disasters go to train OR val, never both, so
+    # validation never sees buildings from a disaster the model trained on.
+    train_tile_ids, val_tile_ids = split_events_train_val(
+        cfg["DATA_ROOT"],
+        split=cfg["TRAIN_SPLIT"],
+        val_frac=cfg["VAL_FRAC"],
+        seed=cfg["SEED"],
+    )
+
     # Dataset + sampler
-    train_ds = build_train_dataset(cfg)
+    train_ds = build_train_dataset(cfg, tile_ids=train_tile_ids)
     print(f"Train buildings: {len(train_ds)}")
 
     sampler, class_counts, class_weights_sampler = build_sampler(
@@ -421,14 +437,16 @@ def main():
         collate_fn=building_collate,
     )
 
-    # Validation dataset – same split, no augmentation, no sampler
+    # Validation dataset – held-out disaster events, no augmentation, no sampler
     val_ds = BuildingChangeDataset(
         root=cfg["DATA_ROOT"],
         split=cfg["TRAIN_SPLIT"],
         resize=cfg["RESIZE"],
         limit_tiles=None,
         use_augmentation=False,
+        tile_ids=val_tile_ids,
     )
+    print(f"Val buildings: {len(val_ds)}")
     val_loader = DataLoader(
         val_ds,
         batch_size=batch_buildings,
@@ -461,6 +479,11 @@ def main():
     save_path = Path(cfg["SAVE_BEST_PATH"])
     save_path.parent.mkdir(parents=True, exist_ok=True)
 
+    run_name = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_dir = Path(cfg["LOG_DIR"]) / run_name
+    writer = SummaryWriter(log_dir=str(log_dir))
+    print(f"TensorBoard logs: {log_dir}  (view with: tensorboard --logdir {cfg['LOG_DIR']})")
+
     for epoch in range(1, cfg["EPOCHS"] + 1):
         print(f"\nEpoch {epoch}/{cfg['EPOCHS']}")
 
@@ -482,6 +505,11 @@ def main():
         print(f"Val macro-F1: {val_stats['macro_f1']:.4f}")
         print(val_stats["report"])
 
+        writer.add_scalar("train/loss", tr_stats["loss"], epoch)
+        writer.add_scalar("train/macro_f1", tr_stats["macro_f1"], epoch)
+        writer.add_scalar("val/macro_f1", val_stats["macro_f1"], epoch)
+        writer.add_scalar("lr", optimizer.param_groups[0]["lr"], epoch)
+
         if val_stats["macro_f1"] > best_val_f1:
             best_val_f1 = val_stats["macro_f1"]
             torch.save(
@@ -498,6 +526,8 @@ def main():
             )
 
         scheduler.step()
+
+    writer.close()
 
 
 if __name__ == "__main__":

@@ -35,7 +35,7 @@ from sklearn.metrics import (
 import torch
 from torch.utils.data import DataLoader
 
-from .common import PROJECT_ROOT, get_device, set_seed, IDX2LABEL
+from .common import PROJECT_ROOT, get_device, set_seed, IDX2LABEL, normalize_for_backbone
 from .dataset_tiles import TileBuildingDataset
 from .model_polygon_siamese import (
     SiameseTileBackbone,
@@ -154,8 +154,8 @@ def eval_split(
 
             # Forward tiles through backbone
             with torch.no_grad():
-                F_pre = backbone(pre_t)[0]   # (C,Hf,Wf)
-                F_post = backbone(post_t)[0]
+                F_pre = backbone(normalize_for_backbone(pre_t))[0]   # (C,Hf,Wf)
+                F_post = backbone(normalize_for_backbone(post_t))[0]
 
             C, Hf, Wf = F_pre.shape
 

@@ -3,6 +3,9 @@ __pycache__/
 *.pyc
 .DS_Store
 
+# --- local experiment logs ---
+/runs/
+
 # --- DATA: keep structure, ignore contents ---
 /data/
 !/data/.gitkeep

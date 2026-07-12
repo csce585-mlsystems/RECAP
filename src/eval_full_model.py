@@ -41,6 +41,7 @@ from .common import (
     get_device,
     IDX2LABEL,
     set_seed,
+    normalize_for_backbone,
 )
 from .dataset_tiles import TileBuildingDataset
 from .model_polygon_siamese import (
@@ -144,8 +145,8 @@ def evaluate(cfg: dict) -> None:
         post_t = post_t.to(device)
 
         with torch.no_grad():
-            F_pre = backbone(pre_t)[0]  # (C, Hf, Wf)
-            F_post = backbone(post_t)[0]
+            F_pre = backbone(normalize_for_backbone(pre_t))[0]  # (C, Hf, Wf)
+            F_post = backbone(normalize_for_backbone(post_t))[0]
 
         C, Hf, Wf = F_pre.shape
 

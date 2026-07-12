@@ -33,7 +33,7 @@ from torchvision import transforms
 import torchvision.transforms.functional as TF
 from shapely import wkt as shapely_wkt
 
-from .common import LABEL2IDX
+from .common import LABEL2IDX, IMAGENET_MEAN, IMAGENET_STD
 
 
 def _parse_xy_polygon_wkt(wkt_str: str) -> np.ndarray:
@@ -253,6 +253,7 @@ class BuildingChangeDataset(Dataset):
         resize: int = 512,
         limit_tiles: Optional[int] = None,
         use_augmentation: bool = True,
+        tile_ids: Optional[List[str]] = None,
     ):
         super().__init__()
         self.root = Path(root)
@@ -267,9 +268,13 @@ class BuildingChangeDataset(Dataset):
         self.resize = resize
         self.use_augmentation = use_augmentation
 
-        # Discover tiles
-        all_post = sorted(self.images_dir.glob("*_post_disaster.png"))
-        tile_ids = [p.stem for p in all_post]
+        # Discover tiles, or use a caller-provided subset (e.g. an
+        # event-level train/val split from split_events_train_val).
+        if tile_ids is None:
+            all_post = sorted(self.images_dir.glob("*_post_disaster.png"))
+            tile_ids = [p.stem for p in all_post]
+        else:
+            tile_ids = list(tile_ids)
         if limit_tiles is not None:
             tile_ids = tile_ids[:limit_tiles]
 
@@ -374,6 +379,12 @@ class BuildingChangeDataset(Dataset):
                 pre = torch.clamp(pre + noise, 0.0, 1.0)
                 noise = 0.01 * torch.randn_like(post)
                 post = torch.clamp(post + noise, 0.0, 1.0)
+
+        # Normalize for the ImageNet-pretrained backbone. Safe to do here
+        # (rather than just-in-time like the eval scripts) since this
+        # dataset is training-only and its tensors are never rendered.
+        pre = TF.normalize(pre, IMAGENET_MEAN, IMAGENET_STD)
+        post = TF.normalize(post, IMAGENET_MEAN, IMAGENET_STD)
 
         return (
             pre,                                # (3,H,W)
